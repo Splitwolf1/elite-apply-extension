@@ -1,0 +1,41 @@
+{
+  "name": "elite-apply-extension",
+  "displayName": "Elite Apply — Auto Job Applier",
+  "version": "0.0.1",
+  "description": "Automatically fills and submits job applications on LinkedIn, Indeed, and more",
+  "private": true,
+  "scripts": {
+    "dev": "plasmo dev",
+    "build": "plasmo build",
+    "package": "plasmo package"
+  },
+  "dependencies": {
+    "plasmo": "0.90.4",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.0.268",
+    "@types/react": "18.2.0",
+    "@types/react-dom": "18.2.0",
+    "typescript": "5.4.5"
+  },
+  "manifest": {
+    "name": "Elite Apply — Auto Job Applier",
+    "description": "Automatically fills and submits job applications",
+    "permissions": [
+      "storage",
+      "alarms",
+      "notifications",
+      "activeTab",
+      "scripting"
+    ],
+    "host_permissions": [
+      "https://www.linkedin.com/*",
+      "https://www.indeed.com/*",
+      "https://*.greenhouse.io/*",
+      "https://*.lever.co/*",
+      "https://*.myworkdayjobs.com/*"
+    ]
+  }
+}
