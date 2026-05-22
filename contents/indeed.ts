@@ -1,6 +1,6 @@
 import type { PlasmoCSConfig } from 'plasmo'
 import { getState } from '~lib/storage'
-import { getAnswer, getResume, reportResult } from '~lib/api'
+import { getAnswer, getResume } from '~lib/api'
 
 export const config: PlasmoCSConfig = {
   matches: ['https://www.indeed.com/*'],
@@ -109,27 +109,11 @@ async function fillIndeedApply(job: { queueId: string; jobUrl: string; profile: 
   await new Promise(r => setTimeout(r, 2000))
 
   const result = await fillIndeedApply(job).catch((err) => ({
-    success: false,
-    error: err.message,
+    success: false as const,
+    error: err.message as string,
+    confirmationText: undefined as string | undefined,
   }))
 
-  await reportResult({
-    queueId: job.queueId,
-    jobUrl: job.jobUrl,
-    status: result.success ? 'applied' : 'failed',
-    error: result.success ? undefined : result.error,
-    confirmationText: result.success ? result.confirmationText : undefined,
-  })
-
-  await chrome.runtime.sendMessage({ type: 'CLEAR_ACTIVE_JOB' })
-
-  if (result.success) {
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'assets/icon128.png',
-      title: 'Elite Apply',
-      message: 'Applied successfully via Indeed!',
-    })
-    window.close()
-  }
+  // Signal background — it owns reporting, notification, and window cleanup
+  chrome.runtime.sendMessage({ type: 'JOB_RESULT', result })
 })()

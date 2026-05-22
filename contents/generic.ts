@@ -1,6 +1,6 @@
 import type { PlasmoCSConfig } from 'plasmo'
 import { getState } from '~lib/storage'
-import { getAnswer, getResume, reportResult } from '~lib/api'
+import { getAnswer, getResume } from '~lib/api'
 
 export const config: PlasmoCSConfig = {
   // Catch-all for any job page that isn't LinkedIn/Indeed
@@ -146,17 +146,11 @@ async function fillGenericForm(job: { queueId: string; jobUrl: string; profile: 
   if (!job) return
 
   const result = await fillGenericForm(job).catch((err) => ({
-    success: false,
-    error: err.message,
+    success: false as const,
+    error: err.message as string,
+    confirmationText: undefined as string | undefined,
   }))
 
-  await reportResult({
-    queueId: job.queueId,
-    jobUrl: job.jobUrl,
-    status: result.success ? 'applied' : 'failed',
-    error: result.success ? undefined : result.error,
-    confirmationText: result.success ? result.confirmationText : undefined,
-  })
-
-  await chrome.runtime.sendMessage({ type: 'CLEAR_ACTIVE_JOB' })
+  // Signal background — it owns reporting, notification, and window cleanup
+  chrome.runtime.sendMessage({ type: 'JOB_RESULT', result })
 })()
