@@ -1,8 +1,8 @@
 {
   "name": "elite-apply-extension",
-  "displayName": "Elite Apply — Auto Job Applier",
+  "displayName": "Elite Apply \u2014 Auto Job Applier",
   "version": "0.0.1",
-  "description": "Automatically fills and submits job applications on LinkedIn, Indeed, and more",
+  "description": "Fills job applications on LinkedIn, Indeed, company career sites and every major ATS",
   "private": true,
   "scripts": {
     "dev": "plasmo dev",
@@ -10,7 +10,7 @@
     "package": "plasmo package"
   },
   "dependencies": {
-    "plasmo": "0.90.4",
+    "plasmo": "0.90.5",
     "react": "18.2.0",
     "react-dom": "18.2.0"
   },
@@ -21,8 +21,8 @@
     "typescript": "5.4.5"
   },
   "manifest": {
-    "name": "Elite Apply — Auto Job Applier",
-    "description": "Automatically fills and submits job applications",
+    "name": "Elite Apply \u2014 Auto Job Applier",
+    "description": "Fills job applications on LinkedIn, Indeed, company career sites and every major ATS",
     "permissions": [
       "storage",
       "alarms",
@@ -33,11 +33,9 @@
       "tabs"
     ],
     "host_permissions": [
-      "https://www.linkedin.com/*",
-      "https://www.indeed.com/*",
-      "https://*.greenhouse.io/*",
-      "https://*.lever.co/*",
-      "https://*.myworkdayjobs.com/*"
+      "https://aijobtoolkit.com/*",
+      "https://www.aijobtoolkit.com/*",
+      "http://localhost:3000/*"
     ]
   }
 }

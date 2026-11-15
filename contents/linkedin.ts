@@ -1,144 +1,73 @@
 import type { PlasmoCSConfig } from 'plasmo'
+import { isVisible } from '~lib/autofill'
+import { buildFillContext, getActiveJob, reportJobResult, reportProgress } from '~lib/messages'
+import { runFlow } from '~lib/flow'
 import { getState } from '~lib/storage'
-import { getAnswer, getResume } from '~lib/api'
 
+/**
+ * LinkedIn job page. Easy Apply is filled in its modal; any other "Apply"
+ * opens the company's site in a new tab, which the background adopts and the
+ * universal script (contents/apply.ts) fills.
+ */
 export const config: PlasmoCSConfig = {
   matches: ['https://www.linkedin.com/jobs/*'],
   run_at: 'document_idle',
 }
 
-// Wait for an element matching `selector` to appear, up to `timeoutMs`
-function waitFor(selector: string, timeoutMs = 10_000): Promise<Element | null> {
-  return new Promise((resolve) => {
-    const el = document.querySelector(selector)
-    if (el) return resolve(el)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-    const observer = new MutationObserver(() => {
-      const found = document.querySelector(selector)
-      if (found) { observer.disconnect(); resolve(found) }
-    })
-    observer.observe(document.body, { childList: true, subtree: true })
-    setTimeout(() => { observer.disconnect(); resolve(null) }, timeoutMs)
+async function waitFor<T extends Element>(find: () => T | null | undefined, timeoutMs = 12_000): Promise<T | null> {
+  const end = Date.now() + timeoutMs
+  while (Date.now() < end) {
+    const el = find()
+    if (el) return el
+    await sleep(400)
+  }
+  return null
+}
+
+const modal = () => document.querySelector<HTMLElement>('.jobs-easy-apply-modal, [data-test-modal][role="dialog"]')
+const inModal = (label: string) => modal()?.querySelector<HTMLElement>(`button[aria-label="${label}"]`)
+
+async function main() {
+  const { enabled } = await getState()
+  if (!enabled) return
+  const active = await getActiveJob()
+  if (!active) return
+
+  const applyBtn = await waitFor(() =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>('button.jobs-apply-button, .jobs-apply-button--top-card button'))
+      .find(isVisible),
+  )
+  if (!applyBtn) {
+    return reportJobResult({ success: false, error: 'No Apply button — the job may be closed' })
+  }
+
+  const isEasyApply = /easy apply/i.test(applyBtn.textContent ?? '')
+  applyBtn.click()
+
+  if (!isEasyApply) {
+    // External application: LinkedIn opens the company site in a new tab
+    // (sometimes after a "Continue" dialog). The background follows it.
+    await reportProgress('redirecting to company site')
+    const cont = await waitFor(() =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((b) => /^continue$/i.test(b.textContent?.trim() ?? '')),
+      4000,
+    )
+    cont?.click()
+    return
+  }
+
+  if (!(await waitFor(modal))) {
+    return reportJobResult({ success: false, error: 'Easy Apply dialog did not open' })
+  }
+
+  await runFlow(active, buildFillContext(active), {
+    root: modal,
+    findSubmit: () => inModal('Submit application'),
+    findNext: () => inModal('Review your application') ?? inModal('Continue to next step'),
+    isConfirmation: () => /application (was )?sent|your application was submitted/i.test(document.body.innerText.slice(0, 20000)),
   })
 }
 
-async function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
-  el.focus()
-  el.value = value
-  el.dispatchEvent(new Event('input', { bubbles: true }))
-  el.dispatchEvent(new Event('change', { bubbles: true }))
-}
-
-async function fillLinkedInEasyApply(job: { queueId: string; jobUrl: string; profile: any }) {
-  const { profile } = job
-  const modal = await waitFor('.jobs-easy-apply-modal')
-  if (!modal) return { success: false, error: 'Easy Apply modal not found' }
-
-  let page = 0
-  const MAX_PAGES = 15
-
-  while (page++ < MAX_PAGES) {
-    // Fill all visible text / email / tel inputs
-    const inputs = modal.querySelectorAll<HTMLInputElement>('input[type=text],input[type=email],input[type=tel],textarea')
-    for (const input of inputs) {
-      const label = (input.labels?.[0]?.textContent ?? input.placeholder ?? '').toLowerCase()
-      if (input.value) continue  // already filled
-
-      if (label.includes('first')) await typeInto(input, profile.firstName)
-      else if (label.includes('last')) await typeInto(input, profile.lastName)
-      else if (label.includes('email')) await typeInto(input, profile.email)
-      else if (label.includes('phone')) await typeInto(input, profile.phone)
-      else if (label.includes('linkedin')) await typeInto(input, profile.linkedinUrl ?? '')
-      else if (label.includes('website') || label.includes('portfolio')) await typeInto(input, profile.portfolioUrl ?? '')
-      else {
-        // Unknown field — ask AI for answer
-        const answer = await getAnswer(label, JSON.stringify(profile)).catch(() => '')
-        if (answer) await typeInto(input, answer)
-      }
-    }
-
-    // Handle file upload (resume)
-    const fileInput = modal.querySelector<HTMLInputElement>('input[type=file]')
-    if (fileInput && profile.resumeLocalPath) {
-      // Extension cannot directly set file input value; trigger click to allow user
-      // For automated flow, we rely on resume URL cached on server
-      const resumeData = await getResume().catch(() => null)
-      if (resumeData?.url) {
-        // Fetch blob and dispatch via DataTransfer
-        try {
-          const blob = await fetch(resumeData.url).then(r => r.blob())
-          const file = new File([blob], 'resume.pdf', { type: 'application/pdf' })
-          const dt = new DataTransfer()
-          dt.items.add(file)
-          fileInput.files = dt.files
-          fileInput.dispatchEvent(new Event('change', { bubbles: true }))
-        } catch { /* skip */ }
-      }
-    }
-
-    // Check for work authorization radio buttons
-    const radios = modal.querySelectorAll<HTMLInputElement>('input[type=radio]')
-    for (const radio of radios) {
-      const labelText = (radio.labels?.[0]?.textContent ?? '').toLowerCase()
-      if ((labelText.includes('authorized') || labelText.includes('legal')) && labelText.includes('yes')) {
-        radio.click()
-      }
-      if (labelText.includes('sponsor') && labelText.includes('no')) {
-        radio.click()
-      }
-    }
-
-    // Try "Next" or "Review" button
-    const nextBtn = modal.querySelector<HTMLButtonElement>('button[aria-label="Continue to next step"]')
-    const reviewBtn = modal.querySelector<HTMLButtonElement>('button[aria-label="Review your application"]')
-    const submitBtn = modal.querySelector<HTMLButtonElement>('button[aria-label="Submit application"]')
-
-    if (submitBtn) {
-      submitBtn.click()
-      await new Promise(r => setTimeout(r, 2000))
-      return { success: true, confirmationText: 'Application submitted via LinkedIn Easy Apply' }
-    }
-
-    if (reviewBtn) {
-      reviewBtn.click()
-      await new Promise(r => setTimeout(r, 1500))
-      continue
-    }
-
-    if (nextBtn) {
-      nextBtn.click()
-      await new Promise(r => setTimeout(r, 1500))
-      continue
-    }
-
-    break
-  }
-
-  return { success: false, error: 'Could not complete LinkedIn Easy Apply flow' }
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
-
-;(async () => {
-  const { enabled } = await getState()
-  if (!enabled) return
-
-  // Get active job from background
-  const job = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_JOB' })
-  if (!job || !job.jobUrl.includes('linkedin.com')) return
-
-  // Click the Easy Apply button if present
-  const easyApplyBtn = await waitFor('button.jobs-apply-button')
-  if (!easyApplyBtn) return
-  ;(easyApplyBtn as HTMLButtonElement).click()
-  await new Promise(r => setTimeout(r, 1500))
-
-  const result = await fillLinkedInEasyApply(job).catch((err) => ({
-    success: false as const,
-    error: err.message as string,
-    confirmationText: undefined as string | undefined,
-  }))
-
-  // Signal background — it owns reporting, notification, and window cleanup
-  chrome.runtime.sendMessage({ type: 'JOB_RESULT', result })
-})()
+main().catch((e) => reportJobResult({ success: false, needsManual: true, error: String(e?.message ?? e) }))

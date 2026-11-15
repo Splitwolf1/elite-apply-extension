@@ -5,3 +5,4 @@ build/
 .env.production.local
 *.crx
 *.zip
+tsconfig.tsbuildinfo
