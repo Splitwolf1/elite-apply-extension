@@ -54,6 +54,14 @@ export default function Popup() {
     await setState({ submitMode: mode })
   }
 
+  const [fillMsg, setFillMsg] = useState('')
+  const autofillThisPage = async () => {
+    setFillMsg('Filling…')
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const res = await chrome.runtime.sendMessage({ type: 'AUTOFILL_TAB', tabId: tab?.id })
+    setFillMsg(res?.ok ? 'Done — check the form, then click Submit yourself.' : res?.error ?? 'Could not fill this page.')
+  }
+
   const legalUnset = screening.workAuthorized === null || screening.needsSponsorship === null
 
   return (
@@ -67,7 +75,12 @@ export default function Popup() {
       </div>
 
       <div style={styles.body}>
-        <label style={styles.label}>API Token</label>
+        <button style={{ ...styles.btn, padding: '10px 0' }} onClick={autofillThisPage} disabled={status !== 'ok' && !token}>
+          ⚡ Autofill this page
+        </button>
+        {fillMsg && <p style={styles.hint}>{fillMsg}</p>}
+
+        <label style={{ ...styles.label, marginTop: 8 }}>API Token</label>
         <input
           style={styles.input}
           type="password"

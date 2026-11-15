@@ -1,5 +1,5 @@
 import type { PlasmoCSConfig } from 'plasmo'
-import { findApplyEntry, isConfirmationPage, isVisible } from '~lib/autofill'
+import { fillForm, findApplyEntry, isConfirmationPage, isVisible, needsLogin, showReviewBanner } from '~lib/autofill'
 import { buildFillContext, getActiveJob, reportJobResult, reportProgress, requestReview } from '~lib/messages'
 import { runFlow, watchForConfirmation } from '~lib/flow'
 import { getState } from '~lib/storage'
@@ -63,13 +63,17 @@ async function main() {
     if (isTop) await reportJobResult({ success: true, confirmationText: active.submitting ? 'Submitted automatically' : 'Submitted after review' })
     return
   }
+  const ctx = buildFillContext(active)
+
   if (active.phase === 'review') {
-    // User is reviewing; just keep watching for their submission.
+    // The user took over (sign-in, CAPTCHA, a question we couldn't answer).
+    // When their action leads to a new page with a form — e.g. after signing
+    // in to Workday — fill it again: only empty fields are touched, so
+    // nothing the user typed is overwritten. Otherwise just watch for submit.
+    if (!needsLogin() && (await waitForForm(4000))) return runFlow(active, ctx)
     if (isTop) watchForConfirmation(isConfirmationPage)
     return
   }
-
-  const ctx = buildFillContext(active)
 
   if (await waitForForm(isTop ? 8000 : 6000)) {
     return runFlow(active, ctx)
@@ -102,6 +106,18 @@ async function main() {
   )
   watchForConfirmation(isConfirmationPage)
 }
+
+// "Autofill this page" from the popup: fill whatever form is in this frame
+// and show the review banner. Never submits — the user does.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type !== 'EA_FILL_NOW') return
+  ;(async () => {
+    const active = await chrome.runtime.sendMessage({ type: 'GET_ADHOC_CONTEXT' })
+    if (!active || countFields() < 2) return
+    const report = await fillForm(document, buildFillContext(active))
+    if (report.filled || report.unresolved.length) showReviewBanner(report, report.requiredUnresolved.length ? 'blocked' : 'review')
+  })().catch(() => {})
+})
 
 main().catch((e) => {
   if (isTop) reportJobResult({ success: false, needsManual: true, error: String(e?.message ?? e) })

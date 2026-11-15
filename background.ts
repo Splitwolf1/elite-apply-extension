@@ -133,8 +133,27 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
   // Only the job's own tabs may act — a Greenhouse page the user opened
   // themselves must never be auto-filled.
   const fromJobTab = !!run && sender.tab?.id !== undefined && run.tabIds.includes(sender.tab.id)
+  // …unless the user clicked "Autofill this page" for that tab.
+  const adhoc = (await chrome.storage.session.get('adhoc')).adhoc as { tabId: number; profile: any; until: number } | undefined
+  const fromAdhocTab = !!adhoc && adhoc.until > Date.now() && sender.tab?.id === adhoc.tabId
 
   switch (msg.type) {
+    case 'AUTOFILL_TAB': {
+      // From the popup: fill the form in the user's current tab, never submit.
+      const tabId = Number(msg.tabId)
+      if (!tabId) return { ok: false, error: 'No tab' }
+      let profile: any
+      try { profile = await getProfile() } catch (e: any) { return { ok: false, error: `Could not load your profile: ${e?.message ?? e}` } }
+      await chrome.storage.session.set({ adhoc: { tabId, profile, until: Date.now() + 30 * 60_000 } })
+      await chrome.tabs.sendMessage(tabId, { type: 'EA_FILL_NOW' }).catch(() => {})
+      return { ok: true }
+    }
+
+    case 'GET_ADHOC_CONTEXT': {
+      if (!fromAdhocTab) return null
+      const { screening } = await getState()
+      return { job: { $id: '', jobUrl: sender.tab?.url ?? '' }, profile: adhoc!.profile, screening, submitMode: 'review', phase: 'filling', submitting: false }
+    }
     case 'GET_ACTIVE_JOB': {
       if (!fromJobTab) return null
       const { screening, submitMode } = await getState()
@@ -150,17 +169,17 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
     }
 
     case 'ASK_AI': {
-      if (!fromJobTab) return { answer: '' }
-      const p = run!.profile
+      if (!fromJobTab && !fromAdhocTab) return { answer: '' }
+      const p = fromJobTab ? run!.profile : adhoc!.profile
       const context = JSON.stringify({
-        job: { title: run!.job.jobTitle, company: run!.job.companyName },
+        job: fromJobTab ? { title: run!.job.jobTitle, company: run!.job.companyName } : { page: sender.tab?.title, url: sender.tab?.url },
         applicant: { title: p.professionalTitle, location: p.location, yearsOfExperience: p.yearsOfExperience, degree: p.highestDegree },
       })
       return { answer: await getAnswer(String(msg.question).slice(0, 600), context).catch(() => '') }
     }
 
     case 'GET_RESUME_FILE': {
-      if (!fromJobTab) return null
+      if (!fromJobTab && !fromAdhocTab) return null
       const cached = (await chrome.storage.session.get('resume')).resume
       if (cached) return cached
       const file = await getResumeFile().catch(() => null)

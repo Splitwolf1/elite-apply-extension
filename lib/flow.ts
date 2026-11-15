@@ -48,6 +48,27 @@ export function watchForConfirmation(isConfirmation: () => boolean, report?: Fil
   const timer = setInterval(check, 2000)
 }
 
+/**
+ * Waits for the user to get past a sign-in wall. Single-page ATSs (Workday)
+ * sign in without a reload, so poll: once the password field is gone and a
+ * form is showing, run the flow again. A full page load restarts the content
+ * script, which handles the same case itself.
+ */
+function resumeAfterSignIn(active: ActiveJob, ctx: FillContext, opts: FlowOptions, confirmed: () => boolean) {
+  watchForConfirmation(confirmed)
+  const started = Date.now()
+  const timer = setInterval(() => {
+    if (Date.now() - started > 20 * 60_000) return clearInterval(timer)
+    if (needsLogin()) return
+    const fields = Array.from(document.querySelectorAll('input:not([type=hidden]),textarea,select,[role="combobox"]'))
+      .filter((el) => (el as HTMLElement).offsetParent !== null)
+    if (fields.length < 3) return
+    clearInterval(timer)
+    document.getElementById('elite-apply-banner')?.remove()
+    runFlow(active, ctx, opts)
+  }, 2000)
+}
+
 export async function runFlow(active: ActiveJob, ctx: FillContext, opts: FlowOptions = {}) {
   const root = () => opts.root?.() ?? document
   const submitBtn = () => opts.findSubmit?.() ?? findSubmit(root())
@@ -58,7 +79,8 @@ export async function runFlow(active: ActiveJob, ctx: FillContext, opts: FlowOpt
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (needsLogin()) {
-      return handOver(report, 'This site needs you to sign in or create an account — we never handle passwords.')
+      await handOver(report, 'This site needs you to sign in or create an account — we never handle passwords. We will continue filling once you are in.')
+      return resumeAfterSignIn(active, ctx, opts, confirmed)
     }
 
     // Two passes: answering one question often reveals follow-up fields.
