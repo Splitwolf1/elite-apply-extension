@@ -33,7 +33,7 @@ async function main() {
   const { enabled } = await getState()
   if (!enabled) return
   const active = await getActiveJob()
-  if (!active) return
+  if (!active || active.phase === 'parked') return
 
   const applyBtn = await waitFor(() =>
     Array.from(document.querySelectorAll<HTMLButtonElement>('button.jobs-apply-button, .jobs-apply-button--top-card button'))

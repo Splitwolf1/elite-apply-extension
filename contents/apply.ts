@@ -58,6 +58,13 @@ async function main() {
   const active = await getActiveJob()
   if (!active) return
 
+  // Parked: the user is finishing this one themselves. Touch nothing; just
+  // record it when the confirmation page shows up.
+  if (active.phase === 'parked') {
+    if (isTop) watchForConfirmation(isConfirmationPage)
+    return
+  }
+
   // A confirmation page after our own submit, or after the user's review.
   if ((active.submitting || active.phase === 'review') && isConfirmationPage()) {
     if (isTop) await reportJobResult({ success: true, confirmationText: active.submitting ? 'Submitted automatically' : 'Submitted after review' })

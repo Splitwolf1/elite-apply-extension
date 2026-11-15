@@ -19,7 +19,7 @@ async function main() {
   const { enabled } = await getState()
   if (!enabled) return
   const active = await getActiveJob()
-  if (!active) return
+  if (!active || active.phase === 'parked') return
 
   let btn: HTMLElement | undefined
   for (let i = 0; i < 25 && !btn; i++) {

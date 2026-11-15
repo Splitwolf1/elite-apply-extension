@@ -10,6 +10,12 @@
  *   review  — form is filled and waits for the user to submit; window is
  *             shown; deadline REVIEW_MS. Submission is detected on the
  *             confirmation page and reported as applied.
+ *
+ * One job runs at a time, in one minimised window (redirect tabs are pulled
+ * into it). When the user doesn't finish a review in time (CAPTCHA, sign-in),
+ * the window is "parked": left open so their progress isn't lost, still
+ * watched for a confirmation page, and the queue moves on. At MAX_PARKED
+ * parked windows the queue pauses instead of piling up more windows.
  */
 
 import { getState, setState } from '~lib/storage'
@@ -35,6 +41,53 @@ interface Run {
 const getRun = async (): Promise<Run | null> => (await chrome.storage.session.get('run')).run ?? null
 const saveRun = (run: Run | null) => (run ? chrome.storage.session.set({ run }) : chrome.storage.session.remove(['run', 'resume']))
 
+const MAX_PARKED = 3
+
+/** A job window left open for the user to finish. */
+interface Parked {
+  job: any
+  windowId: number
+  tabIds: number[]
+}
+
+const getParked = async (): Promise<Parked[]> => (await chrome.storage.session.get('parked')).parked ?? []
+const saveParked = (parked: Parked[]) => chrome.storage.session.set({ parked })
+
+/** Parked windows that still exist (the user may have closed some). */
+async function liveParked(): Promise<Parked[]> {
+  const parked = await getParked()
+  const live: Parked[] = []
+  for (const p of parked) if (await chrome.windows.get(p.windowId).then(() => true, () => false)) live.push(p)
+  if (live.length !== parked.length) await saveParked(live)
+  return live
+}
+
+async function park(run: Run) {
+  if (!(await chrome.windows.get(run.windowId).then(() => true, () => false))) return
+  const parked = (await liveParked()).filter((p) => p.windowId !== run.windowId)
+  await saveParked([...parked, { job: run.job, windowId: run.windowId, tabIds: run.tabIds }])
+}
+
+/** Pauses the queue while too many applications wait on the user. */
+async function queuePaused(): Promise<boolean> {
+  const n = (await liveParked()).length
+  const { pausedNotified } = await chrome.storage.session.get('pausedNotified')
+  if (n < MAX_PARKED) {
+    if (pausedNotified) {
+      await chrome.storage.session.remove('pausedNotified')
+      await restoreBadge()
+    }
+    return false
+  }
+  if (!pausedNotified) {
+    await chrome.storage.session.set({ pausedNotified: true })
+    chrome.action.setBadgeText({ text: '!' })
+    chrome.action.setBadgeBackgroundColor({ color: '#dc2626' })
+    notify('Paused', `${n} applications are waiting for you (CAPTCHA or sign-in). Finish or close them and the queue continues.`)
+  }
+  return true
+}
+
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 const ensureAlarm = () => chrome.alarms.create(ALARM_NAME, { periodInMinutes: POLL_INTERVAL_MINUTES })
@@ -47,7 +100,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (run) return checkDeadline(run)
 
   const { token, enabled } = await getState()
-  if (token && enabled) await startNextJob().catch((e) => setState({ lastError: String(e?.message ?? e) }))
+  if (!token || !enabled || (await queuePaused())) return
+  await startNextJob().catch((e) => setState({ lastError: String(e?.message ?? e) }))
 })
 
 async function checkDeadline(run: Run) {
@@ -95,6 +149,7 @@ async function finish(run: Run, status: ReportStatus, details: Record<string, un
     notify('Needs you', `${where}: ${details.error ?? 'finish this application yourself'}.`)
   }
   if (closeWindow) await chrome.windows.remove(run.windowId).catch(() => {})
+  else if (status === 'needs_manual') await park(run)
 }
 
 // ── Follow redirects into new tabs (LinkedIn/Indeed "Apply on company site") ─
@@ -112,11 +167,17 @@ chrome.tabs.onCreated.addListener(async (tab) => {
 chrome.windows.onRemoved.addListener(async (windowId) => {
   const run = await getRun()
   if (run?.windowId === windowId) await finish(run, 'needs_manual', { error: 'Application window was closed' }, false)
+  const parked = await getParked()
+  if (parked.some((p) => p.windowId === windowId)) {
+    await saveParked(parked.filter((p) => p.windowId !== windowId))
+    await queuePaused() // clears the pause once under the limit
+  }
 })
 
 chrome.notifications.onClicked.addListener(async () => {
-  const run = await getRun()
-  if (run) chrome.windows.update(run.windowId, { state: 'normal', focused: true }).catch(() => {})
+  // Bring up the current job, or else the oldest application waiting on the user.
+  const windowId = (await getRun())?.windowId ?? (await liveParked())[0]?.windowId
+  if (windowId) chrome.windows.update(windowId, { state: 'normal', focused: true }).catch(() => {})
 })
 
 // ── Messages from popup and content scripts ──────────────────────────────────
@@ -136,6 +197,10 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
   // …unless the user clicked "Autofill this page" for that tab.
   const adhoc = (await chrome.storage.session.get('adhoc')).adhoc as { tabId: number; profile: any; until: number } | undefined
   const fromAdhocTab = !!adhoc && adhoc.until > Date.now() && sender.tab?.id === adhoc.tabId
+  // A parked window the user is finishing: only watched for confirmation.
+  const parkedEntry = !fromJobTab && sender.tab?.id !== undefined
+    ? (await getParked()).find((p) => p.tabIds.includes(sender.tab!.id!))
+    : undefined
 
   switch (msg.type) {
     case 'AUTOFILL_TAB': {
@@ -155,6 +220,7 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
       return { job: { $id: '', jobUrl: sender.tab?.url ?? '' }, profile: adhoc!.profile, screening, submitMode: 'review', phase: 'filling', submitting: false }
     }
     case 'GET_ACTIVE_JOB': {
+      if (parkedEntry) return { job: parkedEntry.job, profile: {}, screening: {}, submitMode: 'review', phase: 'parked', submitting: false }
       if (!fromJobTab) return null
       const { screening, submitMode } = await getState()
       return { job: run!.job, profile: run!.profile, screening, submitMode, phase: run!.phase, submitting: !!run!.submitting }
@@ -208,6 +274,17 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
     }
 
     case 'JOB_RESULT': {
+      if (parkedEntry) {
+        // The user finished a parked application — record it and tidy up.
+        if (!msg.result?.success) return { ok: false }
+        await saveParked((await getParked()).filter((p) => p.windowId !== parkedEntry.windowId))
+        await reportResult({ queueId: parkedEntry.job.$id, jobUrl: parkedEntry.job.jobUrl, status: 'applied', resultDetails: { confirmationText: 'Submitted by you', page: sender.tab?.url } }).catch(() => {})
+        const where = [parkedEntry.job.jobTitle, parkedEntry.job.companyName].filter(Boolean).join(' at ') || 'the job'
+        notify('Applied!', `Recorded your application for ${where}.`)
+        await incrementBadge()
+        await queuePaused()
+        return { ok: true }
+      }
       if (!fromJobTab) return { ok: false }
       const r = msg.result ?? {}
       const details = { error: r.error, confirmationText: r.confirmationText, filled: r.report?.filled, unresolved: r.report?.unresolved, page: sender.tab?.url }
@@ -227,8 +304,14 @@ function notify(title: string, message: string) {
 
 async function incrementBadge() {
   const { appliedCount = 0 } = await chrome.storage.local.get('appliedCount')
-  const next = (appliedCount as number) + 1
-  await chrome.storage.local.set({ appliedCount: next })
-  chrome.action.setBadgeText({ text: String(next) })
+  await chrome.storage.local.set({ appliedCount: (appliedCount as number) + 1 })
+  await restoreBadge()
+}
+
+async function restoreBadge() {
+  const { pausedNotified } = await chrome.storage.session.get('pausedNotified')
+  if (pausedNotified) return // the "!" stays while paused
+  const { appliedCount = 0 } = await chrome.storage.local.get('appliedCount')
+  chrome.action.setBadgeText({ text: appliedCount ? String(appliedCount) : '' })
   chrome.action.setBadgeBackgroundColor({ color: '#ea580c' })
 }

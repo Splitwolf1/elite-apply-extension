@@ -16,7 +16,8 @@ export interface ActiveJob {
   screening: ScreeningAnswers
   submitMode: SubmitMode
   /** 'review' once the form waits for the user; submission is then theirs. */
-  phase: 'filling' | 'review'
+  /** 'parked': the user is finishing it on their own — only watch for confirmation. */
+  phase: 'filling' | 'review' | 'parked'
   /** True after the extension itself clicked Submit. */
   submitting: boolean
 }
