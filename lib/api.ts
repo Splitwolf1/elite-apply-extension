@@ -47,12 +47,12 @@ export async function revokeToken(): Promise<void> {
 }
 
 /** Whether a résumé file is set up to attach to applications. */
-export async function getResumeStatus(): Promise<{ hasFile: boolean; fileName: string | null }> {
+export async function getResumeStatus(): Promise<{ hasFile: boolean; fileName: string | null; count: number; labels: string[] }> {
   try {
     const r = await json('/api/extension/resume')
-    return { hasFile: !!r.hasFile, fileName: r.fileName ?? null }
+    return { hasFile: !!r.hasFile, fileName: r.fileName ?? null, count: r.count ?? (r.hasFile ? 1 : 0), labels: r.labels ?? [] }
   } catch {
-    return { hasFile: false, fileName: null } // 404 = no résumé at all
+    return { hasFile: false, fileName: null, count: 0, labels: [] } // 404 = no résumé at all
   }
 }
 
@@ -90,13 +90,19 @@ export async function getAnswer(question: string, context: string): Promise<stri
   return (data.answer as string) ?? ''
 }
 
-/** The user's résumé PDF as base64, ready to hand to a content script. */
-export async function getResumeFile(): Promise<{ base64: string; name: string; type: string } | null> {
-  const res = await apiFetch('/api/extension/resume/file')
+/**
+ * The résumé to attach, as base64 for a content script. With `jobText` the
+ * server picks the user's résumé that best fits this job (e.g. their AI one
+ * vs their full-stack one); without it, their default.
+ */
+export async function getResumeFile(jobText = ''): Promise<{ base64: string; name: string; type: string; label?: string } | null> {
+  const res = await apiFetch('/api/extension/resume/file', { method: 'POST', body: JSON.stringify({ jobText }) })
   const type = res.headers.get('content-type') ?? 'application/pdf'
   const name = /filename="?([^";]+)/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'resume.pdf'
+  let label: string | undefined
+  try { label = decodeURIComponent(res.headers.get('x-resume-label') ?? '') || undefined } catch { label = undefined }
   const bytes = new Uint8Array(await res.arrayBuffer())
   let bin = ''
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return { base64: btoa(bin), name, type }
+  return { base64: btoa(bin), name, type, label }
 }

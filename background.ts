@@ -18,7 +18,7 @@
  * parked windows the queue pauses instead of piling up more windows.
  */
 
-import { getState, setState } from '~lib/storage'
+import { DEFAULT_SCREENING, getState, setState, type ScreeningAnswers } from '~lib/storage'
 import { fetchNextJob, getAnswer, getProfile, getResumeFile, getResumeStatus, reportResult, revokeToken, verifyToken, whoAmI, type ReportStatus } from '~lib/api'
 
 export {}
@@ -39,7 +39,7 @@ interface Run {
 }
 
 const getRun = async (): Promise<Run | null> => (await chrome.storage.session.get('run')).run ?? null
-const saveRun = (run: Run | null) => (run ? chrome.storage.session.set({ run }) : chrome.storage.session.remove(['run', 'resume']))
+const saveRun = (run: Run | null) => (run ? chrome.storage.session.set({ run }) : chrome.storage.session.remove(['run', 'resumeCache']))
 
 const MAX_PARKED = 3
 
@@ -155,6 +155,12 @@ async function finish(run: Run, status: ReportStatus, details: Record<string, un
 // ── Follow redirects into new tabs (LinkedIn/Indeed "Apply on company site") ─
 
 chrome.tabs.onCreated.addListener(async (tab) => {
+  // "Autofill this page": follow the user into the tab the job page opened.
+  const { adhoc } = await chrome.storage.session.get('adhoc')
+  if (adhoc && tab.id && tab.openerTabId === adhoc.tabId && adhoc.until > Date.now()) {
+    await chrome.storage.session.set({ adhoc: { ...adhoc, tabId: tab.id, until: Date.now() + 30 * 60_000 } })
+  }
+
   const run = await getRun()
   if (!run || !tab.id || tab.openerTabId === undefined || !run.tabIds.includes(tab.openerTabId)) return
   run.tabIds.push(tab.id)
@@ -218,20 +224,27 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
       let profile: any
       try { profile = await getProfile() } catch (e: any) { return { ok: false, error: `Could not load your profile: ${e?.message ?? e}` } }
       await chrome.storage.session.set({ adhoc: { tabId, profile, until: Date.now() + 30 * 60_000 } })
-      await chrome.tabs.sendMessage(tabId, { type: 'EA_FILL_NOW' }).catch(() => {})
-      return { ok: true }
+      await chrome.storage.session.remove('resumeCache')
+      // The page's top frame answers with what it did (filled / opened the
+      // application / needs sign-in / nothing to fill). Frames with an
+      // embedded form fill themselves.
+      try {
+        const result = await chrome.tabs.sendMessage(tabId, { type: 'EA_FILL_NOW' })
+        return { ok: true, result: result ?? null }
+      } catch {
+        return { ok: false, error: 'This page was open before the extension loaded — reload the page and try again.' }
+      }
     }
 
     case 'GET_ADHOC_CONTEXT': {
       if (!fromAdhocTab) return null
-      const { screening } = await getState()
-      return { job: { $id: '', jobUrl: sender.tab?.url ?? '' }, profile: adhoc!.profile, screening, submitMode: 'review', phase: 'filling', submitting: false }
+      return { job: { $id: '', jobUrl: sender.tab?.url ?? '' }, profile: adhoc!.profile, screening: await screeningFrom(adhoc!.profile), submitMode: 'review', phase: 'filling', submitting: false }
     }
     case 'GET_ACTIVE_JOB': {
       if (parkedEntry) return { job: parkedEntry.job, profile: {}, screening: {}, submitMode: 'review', phase: 'parked', submitting: false }
       if (!fromJobTab) return null
-      const { screening, submitMode } = await getState()
-      return { job: run!.job, profile: run!.profile, screening, submitMode, phase: run!.phase, submitting: !!run!.submitting }
+      const { submitMode } = await getState()
+      return { job: run!.job, profile: run!.profile, screening: await screeningFrom(run!.profile), submitMode, phase: run!.phase, submitting: !!run!.submitting }
     }
 
     case 'MARK_SUBMITTING': {
@@ -247,6 +260,8 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
       const p = fromJobTab ? run!.profile : adhoc!.profile
       const context = JSON.stringify({
         job: fromJobTab ? { title: run!.job.jobTitle, company: run!.job.companyName } : { page: sender.tab?.title, url: sender.tab?.url },
+        // The posting itself — the server uses it to pick the matching résumé to answer from.
+        posting: String(msg.jobText ?? '').slice(0, 3000),
         applicant: { title: p.professionalTitle, location: p.location, yearsOfExperience: p.yearsOfExperience, degree: p.highestDegree },
       })
       return { answer: await getAnswer(String(msg.question).slice(0, 600), context).catch(() => '') }
@@ -254,10 +269,12 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
 
     case 'GET_RESUME_FILE': {
       if (!fromJobTab && !fromAdhocTab) return null
-      const cached = (await chrome.storage.session.get('resume')).resume
-      if (cached) return cached
-      const file = await getResumeFile().catch(() => null)
-      if (file) await chrome.storage.session.set({ resume: file })
+      // One pick per job (or per ad-hoc tab): the best-fitting résumé for it.
+      const key = fromJobTab ? `job:${run!.job.$id}` : `tab:${sender.tab?.id}`
+      const { resumeCache } = await chrome.storage.session.get('resumeCache')
+      if (resumeCache?.key === key) return resumeCache.file
+      const file = await getResumeFile(String(msg.jobText ?? '')).catch(() => null)
+      if (file) await chrome.storage.session.set({ resumeCache: { key, file } })
       return file
     }
 
@@ -302,6 +319,18 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
     }
   }
   return null
+}
+
+// ── Application answers ──────────────────────────────────────────────────────
+
+/**
+ * Screening answers live in the website profile (Settings) — one source of
+ * truth. Answers set in older versions of this popup fill any gaps.
+ */
+async function screeningFrom(profile: any): Promise<ScreeningAnswers> {
+  const set = (o: any) => Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== null && v !== '' && v !== undefined))
+  const { screening: legacy } = await getState()
+  return { ...DEFAULT_SCREENING, ...set(legacy), ...set(profile?.screening) }
 }
 
 // ── Sign-in hand-off ─────────────────────────────────────────────────────────

@@ -18,6 +18,11 @@ export interface Profile {
   phone: string
   location: string
   zipCode: string
+  addressLine1?: string
+  addressLine2?: string
+  city?: string
+  state?: string
+  country?: string
   linkedinUrl: string
   githubUrl: string
   websiteUrl: string
@@ -31,8 +36,10 @@ export interface FillContext {
   profile: Profile
   screening: ScreeningAnswers
   job: { jobTitle?: string | null; companyName?: string | null; coverLetter?: string | null }
-  /** Background-fetched résumé, base64 encoded. */
+  /** Background-fetched résumé (the best fit for this job when there are several). */
   getResumeFile: () => Promise<File | null>
+  /** Label of the résumé getResumeFile returned, once fetched. */
+  resumeLabel?: () => string | undefined
   /** AI answer for an open-ended question (empty string when unavailable). */
   askAI: (question: string) => Promise<string>
 }
@@ -44,6 +51,8 @@ export interface FillReport {
   /** Subset of unresolved that the form marks as required. */
   requiredUnresolved: string[]
   resumeUploaded: boolean
+  /** Which résumé was attached (when the user has several). */
+  resumeLabel?: string
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -122,7 +131,7 @@ function isRequired(el: Element, question: string): boolean {
 
 type FieldKind =
   | 'firstName' | 'lastName' | 'fullName' | 'preferredName' | 'email' | 'phone'
-  | 'city' | 'state' | 'zip' | 'country' | 'location' | 'address'
+  | 'city' | 'state' | 'zip' | 'country' | 'location' | 'address' | 'address2'
   | 'linkedin' | 'github' | 'website' | 'currentTitle' | 'currentCompany'
   | 'yearsExperience' | 'salary' | 'noticePeriod' | 'startDate' | 'education'
   | 'coverLetter' | 'workAuth' | 'sponsorship' | 'relocate' | 'eeo' | 'howHeard'
@@ -144,6 +153,7 @@ const RULES: [FieldKind, RegExp][] = [
   ['linkedin', /linkedin/],
   ['github', /github/],
   ['website', /website|portfolio|personal (site|url)|blog/],
+  ['address2', /address line ?2|apartment|\bapt\b|suite|unit (number|no)/],
   ['zip', /zip|postal/],
   ['city', /\bcity\b|town/],
   ['state', /\bstate\b|province|region/],
@@ -168,7 +178,7 @@ const RULES: [FieldKind, RegExp][] = [
  */
 const SHORT_LABEL_KINDS = new Set<FieldKind>([
   'firstName', 'lastName', 'fullName', 'email', 'phone', 'city', 'state', 'zip', 'country',
-  'address', 'location', 'linkedin', 'github', 'website', 'currentTitle', 'currentCompany', 'education',
+  'address', 'address2', 'location', 'linkedin', 'github', 'website', 'currentTitle', 'currentCompany', 'education',
 ])
 
 export function classify(question: string): FieldKind {
@@ -214,9 +224,11 @@ function valueFor(kind: FieldKind, ctx: FillContext): string | null {
     case 'fullName': return p.fullName || `${p.firstName} ${p.lastName}`.trim() || null
     case 'email': return p.email || null
     case 'phone': return p.phone || null
-    case 'city': return loc.city || null
-    case 'state': return loc.state || null
-    case 'country': return loc.country || null
+    case 'city': return p.city || loc.city || null
+    case 'state': return p.state || loc.state || null
+    case 'country': return p.country || loc.country || null
+    case 'address': return p.addressLine1 || null
+    case 'address2': return p.addressLine2 || null
     case 'zip': return p.zipCode || null
     case 'location': return p.location || null
     case 'linkedin': return p.linkedinUrl || null
@@ -405,6 +417,33 @@ async function uploadResume(input: HTMLInputElement, ctx: FillContext): Promise<
   return true
 }
 
+/**
+ * The résumé file input. Many ATSs (Workday, SmartRecruiters…) hide the real
+ * <input type=file> behind a styled drop zone, so look at the input's own
+ * attributes *and* the text of the box around it. Cover-letter inputs are
+ * skipped; failing all else, the only document input on the page.
+ */
+function pickResumeInput(files: HTMLInputElement[]): HTMLInputElement | null {
+  const RESUME = /resume|résumé|\bcv\b|curriculum/i
+  const OTHER = /cover.?letter|transcript|portfolio|photo|avatar|image|writing sample/i
+  const describe = (f: HTMLInputElement) => {
+    const own = [questionText(f), f.name, f.id, f.getAttribute('aria-label'), f.getAttribute('data-automation-id'), f.getAttribute('data-testid')].join(' ')
+    let box: Element | null = f.parentElement
+    for (let i = 0; i < 4 && box && norm(box.textContent).length < 40; i++) box = box.parentElement
+    return { own, around: norm(box?.textContent).slice(0, 300) }
+  }
+  const docs = files.filter((f) => !f.disabled && (!f.accept || /pdf|doc|application|\*/i.test(f.accept)))
+  const scored = docs.map((f) => {
+    const { own, around } = describe(f)
+    const score = (RESUME.test(own) ? 4 : 0) + (RESUME.test(around) ? 2 : 0)
+      - (OTHER.test(own) ? 5 : 0) - (OTHER.test(around) && !RESUME.test(around) ? 3 : 0)
+    return { f, score }
+  }).sort((a, b) => b.score - a.score)
+  if (scored.length && scored[0].score > 0) return scored[0].f
+  const plain = scored.filter((x) => x.score === 0)
+  return plain.length === 1 ? plain[0].f : null
+}
+
 // ── Page-level checks ────────────────────────────────────────────────────────
 
 /**
@@ -519,9 +558,10 @@ export async function fillForm(root: ParentNode, ctx: FillContext): Promise<Fill
 
   // Résumé upload — the file input labelled résumé/CV, or the only one
   const files = Array.from(root.querySelectorAll<HTMLInputElement>('input[type=file]'))
-  const resumeInput = files.find((f) => /resume|résumé|\bcv\b/i.test(questionText(f) + f.name + f.id)) ?? (files.length === 1 ? files[0] : null)
+  const resumeInput = pickResumeInput(files)
   if (resumeInput && !resumeInput.files?.length) {
     report.resumeUploaded = await uploadResume(resumeInput, ctx)
+    if (report.resumeUploaded) report.resumeLabel = ctx.resumeLabel?.()
     if (report.resumeUploaded) report.filled++
     else miss('Résumé upload', resumeInput)
   }
@@ -575,16 +615,35 @@ export function findApplyEntry(): HTMLElement | null {
   return els.find((e) => /^(apply( now| for this (job|position|role))?|apply manually|start (your )?application|i'?m interested)$/i.test(btnText(e))) ?? null
 }
 
-/** Outlines fields the user still has to answer and shows a status banner. */
+let bannerRecheck: (() => Promise<void>) | null = null
+
+/** What "Check again" on the banner does (re-fill empty fields and re-count). */
+export function setBannerRecheck(fn: (() => Promise<void>) | null) {
+  bannerRecheck = fn
+}
+
+/** Status banner: what was filled, what still needs the user, plus Check again / close. */
 export function showReviewBanner(report: FillReport, mode: 'review' | 'blocked', reason?: string) {
   document.getElementById('elite-apply-banner')?.remove()
   const el = document.createElement('div')
   el.id = 'elite-apply-banner'
   el.style.cssText = 'position:fixed;z-index:2147483647;bottom:16px;right:16px;max-width:360px;background:#fff7ed;border:2px solid #ea580c;border-radius:12px;padding:14px 16px;font:13px/1.45 system-ui,sans-serif;color:#1f2937;box-shadow:0 10px 30px rgba(0,0,0,.18)'
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   const todo = report.requiredUnresolved.length ? report.requiredUnresolved : report.unresolved
-  el.innerHTML = `<div style="font-weight:700;color:#c2410c;margin-bottom:6px">⚡ Elite Apply ${mode === 'blocked' ? '— needs you' : 'filled this form'}</div>
-<div>${reason ? `${reason}<br>` : ''}Filled <b>${report.filled}</b> field${report.filled === 1 ? '' : 's'}${report.resumeUploaded ? ' and attached your résumé' : ''}.</div>
-${todo.length ? `<div style="margin-top:6px"><b>Please answer:</b><ul style="margin:4px 0 0 16px;padding:0">${todo.slice(0, 6).map((q) => `<li>${q.replace(/</g, '&lt;').slice(0, 80)}</li>`).join('')}</ul></div>` : ''}
-<div style="margin-top:8px;color:#6b7280">Review the form, then click Submit yourself. We'll mark it applied automatically.</div>`
+  const attached = report.resumeUploaded ? ` and attached your résumé${report.resumeLabel ? ` (<b>${esc(report.resumeLabel)}</b>)` : ''}` : ''
+  const ready = mode === 'review' && !report.requiredUnresolved.length
+  el.innerHTML = `<button data-ea="close" title="Hide" style="position:absolute;top:6px;right:8px;border:0;background:none;font-size:16px;color:#9a3412;cursor:pointer">×</button>
+<div style="font-weight:700;color:#c2410c;margin-bottom:6px;padding-right:16px">⚡ Elite Apply ${mode === 'blocked' ? '— needs you' : ready ? '— ready to submit' : 'filled this form'}</div>
+<div>${reason ? `${esc(reason)}<br>` : ''}Filled <b>${report.filled}</b> field${report.filled === 1 ? '' : 's'}${attached}.</div>
+${todo.length ? `<div style="margin-top:6px"><b>Please answer:</b><ul style="margin:4px 0 0 16px;padding:0">${todo.slice(0, 6).map((q) => `<li>${esc(q).slice(0, 80)}</li>`).join('')}</ul></div>` : ''}
+<div style="margin-top:8px;color:#6b7280">${todo.length ? 'Fill these in yourself, then press <b>Check again</b>.' : 'Review the form, then click Submit yourself.'} We'll mark it applied automatically.</div>
+${bannerRecheck ? '<button data-ea="recheck" style="margin-top:10px;padding:6px 12px;border:0;border-radius:8px;background:#ea580c;color:#fff;font-weight:600;cursor:pointer">Check again</button>' : ''}`
+  el.querySelector('[data-ea="close"]')?.addEventListener('click', () => el.remove())
+  el.querySelector('[data-ea="recheck"]')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement
+    btn.disabled = true
+    btn.textContent = 'Checking…'
+    try { await bannerRecheck?.() } finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Check again' } }
+  })
   document.body.appendChild(el)
 }

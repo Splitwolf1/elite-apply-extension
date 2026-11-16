@@ -5,7 +5,7 @@
  */
 
 import {
-  fillForm, findNext, findSubmit, hasCaptcha, isConfirmationPage, needsLogin, showReviewBanner,
+  fillForm, findNext, findSubmit, hasCaptcha, isConfirmationPage, needsLogin, setBannerRecheck, showReviewBanner,
   type FillContext, type FillReport,
 } from './autofill'
 import { markSubmitting, reportJobResult, reportProgress, requestReview, type ActiveJob } from './messages'
@@ -76,6 +76,16 @@ export async function runFlow(active: ActiveJob, ctx: FillContext, opts: FlowOpt
   const confirmed = opts.isConfirmation ?? isConfirmationPage
 
   let report: FillReport = { filled: 0, unresolved: [], requiredUnresolved: [], resumeUploaded: false }
+
+  // "Check again" on the banner: after the user answers what we couldn't,
+  // fill anything still empty and recount what's missing. Never submits.
+  setBannerRecheck(async () => {
+    const fresh = await fillForm(root(), ctx)
+    const r = { ...merge(report, fresh), unresolved: fresh.unresolved } // only what's still empty
+    report = r
+    showReviewBanner(r, r.requiredUnresolved.length ? 'blocked' : 'review',
+      r.requiredUnresolved.length ? 'Still missing a few answers.' : 'Everything required is filled.')
+  })
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (needsLogin()) {

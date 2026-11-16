@@ -1,6 +1,6 @@
 import type { PlasmoCSConfig } from 'plasmo'
-import { fillForm, findApplyEntry, isConfirmationPage, isVisible, needsLogin, showReviewBanner } from '~lib/autofill'
-import { buildFillContext, getActiveJob, reportJobResult, reportProgress, requestReview } from '~lib/messages'
+import { fillForm, findApplyEntry, isConfirmationPage, isVisible, needsLogin, questionText, setBannerRecheck, showReviewBanner, type FillContext } from '~lib/autofill'
+import { buildFillContext, getActiveJob, reportJobResult, reportProgress, requestReview, type ActiveJob } from '~lib/messages'
 import { runFlow, watchForConfirmation } from '~lib/flow'
 import { getState } from '~lib/storage'
 
@@ -56,7 +56,13 @@ async function main() {
   if (!enabled) return
 
   const active = await getActiveJob()
-  if (!active) return
+  if (!active) {
+    // Not a queued job — but maybe the user pressed "Autofill this page" and
+    // this is the application the job page opened (e.g. Workday).
+    const adhoc = await chrome.runtime.sendMessage({ type: 'GET_ADHOC_CONTEXT' }).catch(() => null)
+    if (adhoc) startAdhoc(adhoc)
+    return
+  }
 
   // Parked: the user is finishing this one themselves. Touch nothing; just
   // record it when the confirmation page shows up.
@@ -114,16 +120,99 @@ async function main() {
   watchForConfirmation(isConfirmationPage)
 }
 
-// "Autofill this page" from the popup: fill whatever form is in this frame
-// and show the review banner. Never submits — the user does.
-chrome.runtime.onMessage.addListener((msg) => {
+// ── "Autofill this page" ──────────────────────────────────────────────────────
+// Started from the popup on whatever page the user is on. Never submits.
+// On a job description it clicks Apply; on the application (also after the
+// user signs in, and on every new step) it fills fields as they appear.
+
+let adhocRunning = false
+
+/** Fields we've already seen, so we only refill when new ones appear. */
+const fieldKey = (el: Element) =>
+  `${(el as HTMLInputElement).name || el.id || ''}|${questionText(el as HTMLElement).slice(0, 60)}`
+
+function startAdhoc(active: ActiveJob, first?: (r: Record<string, unknown>) => void) {
+  if (adhocRunning) return
+  adhocRunning = true
+  const ctx: FillContext = buildFillContext(active)
+  const seen = new Set<string>()
+  let lastReport: Awaited<ReturnType<typeof fillForm>> | null = null
+  let loginShown = false
+
+  const fill = async () => {
+    const fields = Array.from(document.querySelectorAll(FIELD_SELECTOR)).filter(isVisible)
+    fields.forEach((f) => seen.add(fieldKey(f)))
+    const r = await fillForm(document, ctx)
+    lastReport = r
+    if (r.filled || r.unresolved.length) {
+      showReviewBanner(r, r.requiredUnresolved.length ? 'blocked' : 'review')
+    }
+    return r
+  }
+  setBannerRecheck(async () => { await fill() })
+
+  ;(async () => {
+    // First look, answered to the popup (top frame only).
+    if (needsLogin()) {
+      if (isTop) {
+        showReviewBanner({ filled: 0, unresolved: [], requiredUnresolved: [], resumeUploaded: false }, 'blocked',
+          'Sign in or create your account on this site — we never handle passwords. We\'ll fill the application as soon as it appears.')
+        loginShown = true
+      }
+      first?.({ kind: 'login' })
+    } else if (countFields() >= 2) {
+      const r = await fill()
+      first?.({ kind: 'filled', filled: r.filled, missing: r.requiredUnresolved, resumeUploaded: r.resumeUploaded, resumeLabel: r.resumeLabel })
+    } else if (isTop) {
+      const formUrl = atsFormUrl()
+      const entry = formUrl ? null : findApplyEntry()
+      if (formUrl) {
+        first?.({ kind: 'opening' })
+        location.href = formUrl
+        return
+      } else if (hasAtsIframe()) {
+        first?.({ kind: 'iframe' })
+      } else if (entry) {
+        first?.({ kind: 'opening' })
+        entry.click()
+      } else {
+        first?.({ kind: 'none' })
+      }
+    }
+
+    // Keep going for 20 minutes: sign-in walls, multi-step forms, SPAs.
+    const end = Date.now() + 20 * 60_000
+    while (Date.now() < end) {
+      await sleep(2500)
+      if (isConfirmationPage()) {
+        document.getElementById('elite-apply-banner')?.remove()
+        return
+      }
+      if (needsLogin()) continue
+      if (loginShown) { loginShown = false; document.getElementById('elite-apply-banner')?.remove() }
+      const fields = Array.from(document.querySelectorAll(FIELD_SELECTOR)).filter(isVisible)
+      if (fields.length < 2) continue
+      if (fields.some((f) => !seen.has(fieldKey(f)))) await fill() // a new step or newly revealed questions
+    }
+    void lastReport
+  })().catch(() => {})
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== 'EA_FILL_NOW') return
   ;(async () => {
-    const active = await chrome.runtime.sendMessage({ type: 'GET_ADHOC_CONTEXT' })
-    if (!active || countFields() < 2) return
-    const report = await fillForm(document, buildFillContext(active))
-    if (report.filled || report.unresolved.length) showReviewBanner(report, report.requiredUnresolved.length ? 'blocked' : 'review')
-  })().catch(() => {})
+    const active = await chrome.runtime.sendMessage({ type: 'GET_ADHOC_CONTEXT' }).catch(() => null)
+    if (!active) { if (isTop) sendResponse({ kind: 'error' }); return }
+    if (adhocRunning) {
+      // Pressed again on the same page: fill whatever is empty now.
+      const r = await fillForm(document, buildFillContext(active))
+      if (r.filled || r.unresolved.length) showReviewBanner(r, r.requiredUnresolved.length ? 'blocked' : 'review')
+      if (isTop) sendResponse({ kind: 'filled', filled: r.filled, missing: r.requiredUnresolved, resumeUploaded: r.resumeUploaded, resumeLabel: r.resumeLabel })
+      return
+    }
+    startAdhoc(active, isTop ? sendResponse : undefined)
+  })().catch(() => { if (isTop) sendResponse({ kind: 'error' }) })
+  return isTop // only the top frame answers the popup
 })
 
 main().catch((e) => {

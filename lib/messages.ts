@@ -43,20 +43,33 @@ export const reportProgress = (note: string) => send({ type: 'JOB_PROGRESS', not
 /** Recorded before the extension clicks Submit, so the next page load can confirm it. */
 export const markSubmitting = () => send({ type: 'MARK_SUBMITTING' })
 
+/**
+ * What this job is about, for picking the right résumé and grounding AI
+ * answers: the queued title/company plus the page's own title and opening text.
+ */
+export function jobText(active: ActiveJob): string {
+  const page = `${document.title}\n${(document.body?.innerText ?? '').slice(0, 4000)}`
+  return [active.job.jobTitle, active.job.companyName, page].filter(Boolean).join('\n').slice(0, 6000)
+}
+
 export function buildFillContext(active: ActiveJob): FillContext {
   let resume: Promise<File | null> | null = null
+  let label: string | undefined
   return {
     profile: active.profile,
     screening: active.screening,
     job: active.job,
-    askAI: async (question) => (await send<{ answer?: string }>({ type: 'ASK_AI', question }))?.answer ?? '',
+    askAI: async (question) =>
+      (await send<{ answer?: string }>({ type: 'ASK_AI', question, jobText: jobText(active) }))?.answer ?? '',
     getResumeFile: () => {
-      resume ??= send<{ base64: string; name: string; type: string } | null>({ type: 'GET_RESUME_FILE' }).then((f) => {
+      resume ??= send<{ base64: string; name: string; type: string; label?: string } | null>({ type: 'GET_RESUME_FILE', jobText: jobText(active) }).then((f) => {
         if (!f?.base64) return null
+        label = f.label
         const bytes = Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0))
         return new File([bytes], f.name, { type: f.type })
       })
       return resume
     },
+    resumeLabel: () => label,
   }
 }
