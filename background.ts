@@ -19,7 +19,7 @@
  */
 
 import { getState, setState } from '~lib/storage'
-import { fetchNextJob, getAnswer, getProfile, getResumeFile, reportResult, verifyToken, type ReportStatus } from '~lib/api'
+import { fetchNextJob, getAnswer, getProfile, getResumeFile, getResumeStatus, reportResult, verifyToken, type ReportStatus } from '~lib/api'
 
 export {}
 
@@ -189,6 +189,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 async function handle(msg: any, sender: chrome.runtime.MessageSender) {
   if (msg.type === 'VERIFY_TOKEN') return { ok: await verifyToken() }
+  if (msg.type === 'RESUME_STATUS') return getResumeStatus()
 
   const run = await getRun()
   // Only the job's own tabs may act — a Greenhouse page the user opened

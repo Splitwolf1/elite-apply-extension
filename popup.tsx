@@ -13,6 +13,10 @@ export default function Popup() {
   const [status, setStatus] = useState<'idle' | 'verifying' | 'ok' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
   const [saved, setSaved] = useState(false)
+  const [apiBase, setApiBase] = useState('')
+  const [resume, setResume] = useState<{ hasFile: boolean; fileName: string | null } | null>(null)
+
+  const checkResume = () => chrome.runtime.sendMessage({ type: 'RESUME_STATUS' }).then(setResume).catch(() => setResume(null))
 
   useEffect(() => {
     getState().then((s) => {
@@ -20,6 +24,8 @@ export default function Popup() {
       setEnabled(s.enabled)
       setSubmitMode(s.submitMode)
       setScreening(s.screening)
+      setApiBase(s.apiBase)
+      if (s.token) checkResume()
     })
   }, [])
 
@@ -28,8 +34,10 @@ export default function Popup() {
     setErrorMsg('')
     await setState({ token: token.trim() })
     const res = await chrome.runtime.sendMessage({ type: 'VERIFY_TOKEN' })
-    if (res?.ok) setStatus('ok')
-    else {
+    if (res?.ok) {
+      setStatus('ok')
+      checkResume()
+    } else {
       setStatus('error')
       setErrorMsg('Token invalid or server unreachable.')
     }
@@ -75,6 +83,19 @@ export default function Popup() {
       </div>
 
       <div style={styles.body}>
+        {resume && !resume.hasFile && (
+          <a
+            href={`${apiBase}/settings`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ display: 'block', fontSize: 12, padding: '8px 10px', borderRadius: 6, background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', textDecoration: 'none' }}
+          >
+            ⚠ No résumé file — forms get filled but nothing is attached. <u>Upload one in Settings</u>
+          </a>
+        )}
+        {resume?.hasFile && (
+          <div style={{ fontSize: 12, color: '#166534' }}>✓ Attaching {resume.fileName ?? 'your résumé'}</div>
+        )}
         <button style={{ ...styles.btn, padding: '10px 0' }} onClick={autofillThisPage} disabled={status !== 'ok' && !token}>
           ⚡ Autofill this page
         </button>
@@ -124,6 +145,7 @@ export default function Popup() {
           Voluntary self-identification (gender, race, veteran, disability) is always answered “prefer not to say”.
           We never enter passwords, create accounts, solve CAPTCHAs or tick consent boxes for you.
         </p>
+        <p style={{ ...styles.hint, marginTop: 4 }}>Server: {apiBase.replace(/^https?:\/\//, '')}</p>
       </div>
     </div>
   )

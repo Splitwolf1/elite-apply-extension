@@ -36,6 +36,16 @@ export async function verifyToken(): Promise<boolean> {
   }
 }
 
+/** Whether a résumé file is set up to attach to applications. */
+export async function getResumeStatus(): Promise<{ hasFile: boolean; fileName: string | null }> {
+  try {
+    const r = await json('/api/extension/resume')
+    return { hasFile: !!r.hasFile, fileName: r.fileName ?? null }
+  } catch {
+    return { hasFile: false, fileName: null } // 404 = no résumé at all
+  }
+}
+
 /** Pull next queued job assigned to 'extension' executor */
 export async function fetchNextJob() {
   return json('/api/extension/queue')
