@@ -28,12 +28,22 @@ const json = async (path: string, init?: RequestInit) => (await apiFetch(path, i
 
 /** Verify that the stored token is still valid */
 export async function verifyToken(): Promise<boolean> {
+  return (await whoAmI()) !== null
+}
+
+/** The account the stored key signs in as, or null when not signed in. */
+export async function whoAmI(): Promise<{ email: string | null; name: string | null } | null> {
   try {
-    await apiFetch('/api/extension/auth/verify')
-    return true
+    const r = await json('/api/extension/auth/verify')
+    return { email: r.email ?? null, name: r.name ?? null }
   } catch {
-    return false
+    return null
   }
+}
+
+/** Sign out: deactivate this device's key on the server. */
+export async function revokeToken(): Promise<void> {
+  await apiFetch('/api/extension/auth/revoke', { method: 'POST' }).catch(() => {})
 }
 
 /** Whether a résumé file is set up to attach to applications. */

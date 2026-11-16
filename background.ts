@@ -19,7 +19,7 @@
  */
 
 import { getState, setState } from '~lib/storage'
-import { fetchNextJob, getAnswer, getProfile, getResumeFile, getResumeStatus, reportResult, verifyToken, type ReportStatus } from '~lib/api'
+import { fetchNextJob, getAnswer, getProfile, getResumeFile, getResumeStatus, reportResult, revokeToken, verifyToken, whoAmI, type ReportStatus } from '~lib/api'
 
 export {}
 
@@ -190,6 +190,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 async function handle(msg: any, sender: chrome.runtime.MessageSender) {
   if (msg.type === 'VERIFY_TOKEN') return { ok: await verifyToken() }
   if (msg.type === 'RESUME_STATUS') return getResumeStatus()
+  if (msg.type === 'WHO_AM_I') return whoAmI()
+  if (msg.type === 'CONNECT_WITH_TOKEN') return connectWithToken(String(msg.token ?? ''), sender)
+  if (msg.type === 'SIGN_OUT') {
+    await revokeToken()
+    await setState({ token: null, enabled: false })
+    return { ok: true }
+  }
 
   const run = await getRun()
   // Only the job's own tabs may act — a Greenhouse page the user opened
@@ -295,6 +302,43 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
     }
   }
   return null
+}
+
+// ── Sign-in hand-off ─────────────────────────────────────────────────────────
+
+/**
+ * Saves a key handed over by the website's /extension/connect page. Only that
+ * page, on the server this build talks to, may sign the extension in — a key
+ * posted from any other site is refused. The key is checked with the server
+ * before it replaces the current one.
+ */
+async function connectWithToken(token: string, sender: chrome.runtime.MessageSender) {
+  const { apiBase, token: previous } = await getState()
+  let from: URL | null = null
+  try { from = new URL(sender.url ?? sender.tab?.url ?? '') } catch { from = null }
+  const allowed = new URL(apiBase)
+  const hostOk = from && from.protocol === allowed.protocol && (from.host === allowed.host || from.host === `www.${allowed.host}`)
+  if (!hostOk || !from!.pathname.startsWith('/extension/connect') || sender.id !== chrome.runtime.id) {
+    return { ok: false, error: 'Sign-in must come from the Elite Apply website' }
+  }
+  if (!/^[a-f0-9]{64}$/.test(token)) return { ok: false, error: 'Malformed key' }
+
+  await setState({ token })
+  const me = await whoAmI()
+  if (!me) {
+    await setState({ token: previous ?? null })
+    return { ok: false, error: 'The server rejected the key' }
+  }
+  // Replacing an older key on this device: retire it on the server.
+  if (previous && previous !== token) {
+    await fetch(`${apiBase}/api/extension/auth/revoke`, { method: 'POST', headers: { 'X-Extension-Token': previous } }).catch(() => {})
+  }
+  await setState({ lastError: null })
+  notify('Signed in', `Connected as ${me.email ?? 'your account'}.`)
+  // Close the hand-off tab once the page has shown its confirmation.
+  const tabId = sender.tab?.id
+  if (tabId !== undefined) setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 2500)
+  return { ok: true, email: me.email }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

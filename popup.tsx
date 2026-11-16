@@ -6,44 +6,58 @@ const toTri = (v: boolean | null): TriState => (v === null ? 'unset' : v ? 'yes'
 const fromTri = (v: TriState): boolean | null => (v === 'unset' ? null : v === 'yes')
 
 export default function Popup() {
-  const [token, setToken] = useState('')
   const [enabled, setEnabled] = useState(false)
   const [submitMode, setSubmitMode] = useState<SubmitMode>('review')
   const [screening, setScreening] = useState<ScreeningAnswers>(DEFAULT_SCREENING)
-  const [status, setStatus] = useState<'idle' | 'verifying' | 'ok' | 'error'>('idle')
-  const [errorMsg, setErrorMsg] = useState('')
   const [saved, setSaved] = useState(false)
   const [apiBase, setApiBase] = useState('')
   const [resume, setResume] = useState<{ hasFile: boolean; fileName: string | null } | null>(null)
+  // undefined = checking, null = signed out
+  const [me, setMe] = useState<{ email: string | null; name: string | null } | null | undefined>(undefined)
+  const [manualKey, setManualKey] = useState('')
+  const [keyError, setKeyError] = useState('')
 
-  const checkResume = () => chrome.runtime.sendMessage({ type: 'RESUME_STATUS' }).then(setResume).catch(() => setResume(null))
+  const refresh = async () => {
+    const s = await getState()
+    setEnabled(s.enabled)
+    setSubmitMode(s.submitMode)
+    setScreening(s.screening)
+    setApiBase(s.apiBase)
+    if (!s.token) { setMe(null); setResume(null); return }
+    const who = await chrome.runtime.sendMessage({ type: 'WHO_AM_I' }).catch(() => null)
+    setMe(who ?? null)
+    if (who) chrome.runtime.sendMessage({ type: 'RESUME_STATUS' }).then(setResume).catch(() => setResume(null))
+  }
 
   useEffect(() => {
-    getState().then((s) => {
-      setToken(s.token ?? '')
-      setEnabled(s.enabled)
-      setSubmitMode(s.submitMode)
-      setScreening(s.screening)
-      setApiBase(s.apiBase)
-      if (s.token) checkResume()
-    })
+    refresh()
+    // Signing in happens in a website tab; pick it up if the popup is open.
+    const onChange = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'local' && 'token' in changes) refresh()
+    }
+    chrome.storage.onChanged.addListener(onChange)
+    return () => chrome.storage.onChanged.removeListener(onChange)
   }, [])
 
-  const handleSave = async () => {
-    setStatus('verifying')
-    setErrorMsg('')
-    await setState({ token: token.trim() })
+  const signIn = () => chrome.tabs.create({ url: `${apiBase}/extension/connect?from=extension` })
+
+  const signOut = async () => {
+    await chrome.runtime.sendMessage({ type: 'SIGN_OUT' })
+    setMe(null)
+    setResume(null)
+    setEnabled(false)
+  }
+
+  const useManualKey = async () => {
+    setKeyError('')
+    await setState({ token: manualKey.trim() })
     const res = await chrome.runtime.sendMessage({ type: 'VERIFY_TOKEN' })
-    if (res?.ok) {
-      setStatus('ok')
-      checkResume()
-    } else {
-      setStatus('error')
-      setErrorMsg('Token invalid or server unreachable.')
-    }
+    if (res?.ok) { setManualKey(''); refresh() }
+    else { await setState({ token: null }); setKeyError('That key was not accepted.') }
   }
 
   const handleToggle = async () => {
+    if (!me) return
     const next = !enabled
     setEnabled(next)
     await setState({ enabled: next })
@@ -72,6 +86,40 @@ export default function Popup() {
 
   const legalUnset = screening.workAuthorized === null || screening.needsSponsorship === null
 
+  if (me === undefined) {
+    return <div style={{ ...styles.container, padding: 24, textAlign: 'center', color: '#6b7280' }}>Checking…</div>
+  }
+
+  if (me === null) {
+    return (
+      <div style={styles.container}>
+        <div style={styles.header}>
+          <span style={styles.logo}>⚡</span>
+          <span style={styles.title}>Elite Apply</span>
+        </div>
+        <div style={styles.body}>
+          <p style={{ fontSize: 13, color: '#374151', margin: '4px 0 8px' }}>
+            Sign in with your Elite Apply account to fill and track applications.
+          </p>
+          <button style={{ ...styles.btn, padding: '10px 0' }} onClick={signIn}>Sign in</button>
+          <p style={styles.hint}>Opens {apiBase.replace(/^https?:\/\//, '')} — sign in there and this connects automatically.</p>
+          <details style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
+            <summary style={{ cursor: 'pointer' }}>Use a key instead</summary>
+            <input
+              style={{ ...styles.input, marginTop: 6 }}
+              type="password"
+              placeholder="Key from Settings → Extension"
+              value={manualKey}
+              onChange={(e) => setManualKey(e.target.value)}
+            />
+            <button style={{ ...styles.btn, marginTop: 6 }} onClick={useManualKey} disabled={!manualKey.trim()}>Connect</button>
+            {keyError && <p style={styles.error}>{keyError}</p>}
+          </details>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -83,6 +131,10 @@ export default function Popup() {
       </div>
 
       <div style={styles.body}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: '#374151' }}>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Signed in as <b>{me.email ?? me.name ?? 'you'}</b></span>
+          <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#6b7280', textDecoration: 'underline', cursor: 'pointer', fontSize: 12 }}>Sign out</button>
+        </div>
         {resume && !resume.hasFile && (
           <a
             href={`${apiBase}/settings`}
@@ -96,24 +148,10 @@ export default function Popup() {
         {resume?.hasFile && (
           <div style={{ fontSize: 12, color: '#166534' }}>✓ Attaching {resume.fileName ?? 'your résumé'}</div>
         )}
-        <button style={{ ...styles.btn, padding: '10px 0' }} onClick={autofillThisPage} disabled={status !== 'ok' && !token}>
+        <button style={{ ...styles.btn, padding: '10px 0' }} onClick={autofillThisPage}>
           ⚡ Autofill this page
         </button>
         {fillMsg && <p style={styles.hint}>{fillMsg}</p>}
-
-        <label style={{ ...styles.label, marginTop: 8 }}>API Token</label>
-        <input
-          style={styles.input}
-          type="password"
-          placeholder="Paste token from Settings → Extension"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-        />
-        <button style={styles.btn} onClick={handleSave} disabled={status === 'verifying'}>
-          {status === 'verifying' ? 'Checking…' : 'Save & Verify'}
-        </button>
-        {status === 'ok' && <p style={styles.success}>Connected!</p>}
-        {status === 'error' && <p style={styles.error}>{errorMsg}</p>}
 
         <div style={styles.section}>Submitting</div>
         <label style={styles.radio}>
