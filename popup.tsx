@@ -31,15 +31,25 @@ export default function Popup() {
 
   useEffect(() => {
     refresh()
-    // Signing in happens in a website tab; pick it up if the popup is open.
+    // Signing in happens in a website tab; pick it up whenever the sign-in
+    // state changes, and re-check each time the popup regains focus.
     const onChange = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
       if (area === 'local' && 'token' in changes) refresh()
     }
+    const onFocus = () => refresh()
     chrome.storage.onChanged.addListener(onChange)
-    return () => chrome.storage.onChanged.removeListener(onChange)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      chrome.storage.onChanged.removeListener(onChange)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [])
 
-  const signIn = () => chrome.tabs.create({ url: `${apiBase}/extension/connect?from=extension` })
+  const [signingIn, setSigningIn] = useState(false)
+  const signIn = () => {
+    setSigningIn(true)
+    chrome.tabs.create({ url: `${apiBase}/extension/connect?from=extension` })
+  }
 
   const signOut = async () => {
     await chrome.runtime.sendMessage({ type: 'SIGN_OUT' })
@@ -101,7 +111,7 @@ export default function Popup() {
           <p style={{ fontSize: 13, color: '#374151', margin: '4px 0 8px' }}>
             Sign in with your Elite Apply account to fill and track applications.
           </p>
-          <button style={{ ...styles.btn, padding: '10px 0' }} onClick={signIn}>Sign in</button>
+          <button style={{ ...styles.btn, padding: '10px 0' }} onClick={signIn}>{signingIn ? 'Waiting for sign-in…' : 'Sign in'}</button>
           <p style={styles.hint}>Opens {apiBase.replace(/^https?:\/\//, '')} — sign in there and this connects automatically.</p>
           <details style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
             <summary style={{ cursor: 'pointer' }}>Use a key instead</summary>
