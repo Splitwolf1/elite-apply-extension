@@ -6,3 +6,24 @@ build/
 *.crx
 *.zip
 tsconfig.tsbuildinfo
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# Env files and their timestamped backups. Note that `.env*.local` does NOT
+# match `.env.local.bak-2026…`: the pattern requires the name to END in
+# `.local`, and editing env files routinely leaves such copies behind holding
+# the same keys as the original.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.*.example
+.env*.bak*
+.env.*.bak*
+
+# Service accounts, certificates and private keys.
+*.pem
+*.key
+*.p8
+*.p12
+*service-account*.json
+*credentials*.json
