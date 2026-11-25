@@ -19,7 +19,7 @@
  */
 
 import { DEFAULT_SCREENING, getState, setState, type ScreeningAnswers } from '~lib/storage'
-import { fetchNextJob, getAnswer, getProfile, getResumeFile, getResumeStatus, reportResult, revokeToken, verifyToken, whoAmI, type ReportStatus } from '~lib/api'
+import { atsCheck, fetchNextJob, getAnswer, writeCoverLetter, getProfile, getResumeFile, getResumeStatus, reportResult, revokeToken, verifyToken, whoAmI, type ReportStatus } from '~lib/api'
 
 export {}
 
@@ -276,6 +276,26 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
       const file = await getResumeFile(String(msg.jobText ?? '')).catch(() => null)
       if (file) await chrome.storage.session.set({ resumeCache: { key, file } })
       return file
+    }
+
+    case 'WRITE_COVER_LETTER': {
+      if (!fromJobTab && !fromAdhocTab) return { content: '' }
+      // One letter per job (or tab), reused if the form asks again.
+      const key = fromJobTab ? `job:${run!.job.$id}` : `tab:${sender.tab?.id}`
+      const { letterCache } = await chrome.storage.session.get('letterCache')
+      if (letterCache?.key === key) return { content: letterCache.content }
+      const title = fromJobTab ? run!.job.jobTitle ?? '' : sender.tab?.title ?? ''
+      const company = fromJobTab ? run!.job.companyName ?? '' : ''
+      const content = await writeCoverLetter(String(title), String(company), String(msg.jobText ?? '')).catch(() => '')
+      if (content) await chrome.storage.session.set({ letterCache: { key, content } })
+      return { content }
+    }
+
+    case 'ATS_CHECK': {
+      // From the popup only (no tab sender): check the text it read from the page.
+      if (sender.tab) return { ok: false, error: 'Not allowed' }
+      try { return { ok: true, result: await atsCheck(String(msg.jobText ?? '').slice(0, 20000)) } }
+      catch (e: any) { return { ok: false, error: String(e?.message ?? e) } }
     }
 
     case 'JOB_PROGRESS': {

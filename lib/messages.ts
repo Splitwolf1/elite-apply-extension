@@ -55,6 +55,7 @@ export function jobText(active: ActiveJob): string {
 export function buildFillContext(active: ActiveJob): FillContext {
   let resume: Promise<File | null> | null = null
   let label: string | undefined
+  let letter: Promise<string> | null = null
   return {
     profile: active.profile,
     screening: active.screening,
@@ -71,5 +72,9 @@ export function buildFillContext(active: ActiveJob): FillContext {
       return resume
     },
     resumeLabel: () => label,
+    getCoverLetter: () => {
+      letter ??= send<{ content?: string }>({ type: 'WRITE_COVER_LETTER', jobText: jobText(active) }).then((r) => r?.content ?? '').catch(() => '')
+      return letter
+    },
   }
 }

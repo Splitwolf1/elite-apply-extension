@@ -198,6 +198,12 @@ function startAdhoc(active: ActiveJob, first?: (r: Record<string, unknown>) => v
   })().catch(() => {})
 }
 
+// The popup's "Check this job": the top frame returns the page's text.
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== 'EA_PAGE_TEXT' || !isTop) return
+  sendResponse({ title: document.title, url: location.href, text: (document.body?.innerText ?? '').slice(0, 20000) })
+})
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type !== 'EA_FILL_NOW') return
   ;(async () => {

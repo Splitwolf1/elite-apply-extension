@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getState, setState, type SubmitMode } from '~lib/storage'
+import type { AtsSummary } from '~lib/api'
 
 /**
  * Deliberately small: sign in, on/off, "Autofill this page", and status.
@@ -38,6 +39,9 @@ export default function Popup() {
   const [filling, setFilling] = useState(false)
   const [fillMsg, setFillMsg] = useState<{ text: string; tone: 'ok' | 'warn' | 'info' } | null>(null)
   const [manualKey, setManualKey] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [ats, setAts] = useState<AtsSummary | null>(null)
+  const [atsErr, setAtsErr] = useState('')
   const [keyError, setKeyError] = useState('')
 
   const refresh = async () => {
@@ -108,6 +112,18 @@ export default function Popup() {
     setFilling(false)
   }
 
+  const checkThisJob = async () => {
+    setChecking(true); setAts(null); setAtsErr('')
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      const page = tab?.id ? await chrome.tabs.sendMessage(tab.id, { type: 'EA_PAGE_TEXT' }).catch(() => null) : null
+      if (!page?.text) { setAtsErr('Can’t read this page. Reload it and try again.'); return }
+      const res = await chrome.runtime.sendMessage({ type: 'ATS_CHECK', jobText: `${page.title}\n${page.text}` }).catch(() => null)
+      if (res?.ok) setAts(res.result)
+      else setAtsErr(res?.error || 'The check didn’t finish. Try again.')
+    } finally { setChecking(false) }
+  }
+
   const open = (path: string) => chrome.tabs.create({ url: `${apiBase}${path}` })
 
   if (me === undefined) {
@@ -117,7 +133,7 @@ export default function Popup() {
   if (me === null) {
     return (
       <div style={styles.container}>
-        <div style={styles.header}><span style={styles.logo}>⚡</span><span style={styles.title}>Elite Apply</span></div>
+        <div style={styles.header}><span style={styles.logo} aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M2.5 11.5l3.5-3.5 2.5 2.5 5-6M10 4.5h3.5V8" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg></span><span style={styles.title}>Elite Apply</span></div>
         <div style={styles.body}>
           <p style={{ margin: '2px 0 6px', color: '#374151' }}>Sign in to fill and track applications with your Elite Apply profile.</p>
           <button style={{ ...styles.btn, padding: '10px 0' }} onClick={signIn}>{signingIn ? 'Waiting for sign-in…' : 'Sign in'}</button>
@@ -138,21 +154,46 @@ export default function Popup() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span style={styles.logo}>⚡</span>
+        <span style={styles.logo} aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M2.5 11.5l3.5-3.5 2.5 2.5 5-6M10 4.5h3.5V8" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
         <span style={styles.title}>Elite Apply</span>
-        <button onClick={toggle} title="When on, applies to jobs in your queue" style={{ ...styles.toggle, background: enabled ? '#ea580c' : '#d1d5db' }}>
+        <button onClick={toggle} title="When on, applies to jobs in your queue" style={{ ...styles.toggle, background: enabled ? '#2f5bff' : '#cfd6e4' }}>
           {enabled ? 'ON' : 'OFF'}
         </button>
       </div>
 
       <div style={styles.body}>
         <button style={{ ...styles.btn, padding: '11px 0', fontSize: 14 }} onClick={autofillThisPage} disabled={filling}>
-          {filling ? 'Filling…' : '⚡ Autofill this page'}
+          {filling ? 'Filling…' : 'Autofill this page'}
         </button>
         {fillMsg && <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: tone[fillMsg.tone] }}>{fillMsg.text}</p>}
 
+        <button style={styles.btnLight} onClick={checkThisJob} disabled={checking}>{checking ? 'Checking this job…' : 'Check this job (ATS)'}</button>
+        {atsErr && <p style={{ margin: 0, fontSize: 12, color: '#92400e' }}>{atsErr}</p>}
+        {ats && (
+          <div style={styles.atsBox}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ ...styles.ring, background: `conic-gradient(${ats.score >= 75 ? '#0c9f70' : ats.score >= 50 ? '#2f5bff' : '#e8513b'} ${ats.score}%, #eaf0ff 0)` }}>
+                <b style={styles.ringInner}>{ats.score}</b>
+              </span>
+              <div style={{ fontSize: 12, lineHeight: 1.4, color: '#343b4c' }}>
+                <b style={{ color: '#0b0d12' }}>{ats.have.length} of {ats.have.length + ats.missing.length} keywords</b><br />
+                {ats.resumeLabel ? `vs “${ats.resumeLabel}”` : 'vs your résumé'}
+                {ats.visa !== 'unknown' && <><br /><span style={{ color: ats.visa === 'sponsors' ? '#08734f' : '#b8321f' }}>{ats.visa === 'sponsors' ? 'Mentions sponsorship' : 'No sponsorship'}</span></>}
+              </div>
+            </div>
+            {ats.missing.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#b8321f', width: '100%' }}>MISSING</span>
+                {ats.missing.slice(0, 10).map((k) => <span key={k} style={styles.chipMiss}>{k}</span>)}
+              </div>
+            )}
+            {ats.region && ats.region !== 'us' && <p style={{ margin: 0, fontSize: 11.5, color: '#4a5263' }}>Job is in {({ ca: 'Canada', uk: 'the UK / Ireland', eu: 'Europe' } as Record<string, string>)[ats.region]}: your {({ ca: 'Canadian', uk: 'UK', eu: 'European' } as Record<string, string>)[ats.region]} format is attached if you’ve created one.</p>}
+            <a href="#" onClick={(e) => { e.preventDefault(); open('/ai-resume-scanner') }} style={styles.link}>Tailor a copy on the website →</a>
+          </div>
+        )}
+
         {resume && !resume.hasFile ? (
-          <button onClick={() => open('/settings')} style={styles.notice}>⚠ No résumé uploaded — nothing gets attached. <u>Add one</u></button>
+          <button onClick={() => open('/resumes/recent')} style={styles.notice}>No résumé uploaded, so nothing gets attached. <u>Add one</u></button>
         ) : resume?.hasFile ? (
           <div style={{ fontSize: 12, color: '#166534' }}>
             ✓ {resume.count && resume.count > 1 ? `${resume.count} résumés — the best fit is attached for each job` : `Attaching ${resume.labels?.[0] ?? 'your résumé'}`}
@@ -165,7 +206,7 @@ export default function Popup() {
         </label>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, borderTop: '1px solid #f3f4f6', paddingTop: 8, marginTop: 2 }}>
-          <a href="#" onClick={(e) => { e.preventDefault(); open('/settings') }} style={styles.link}>Profile &amp; answers</a>
+          <a href="#" onClick={(e) => { e.preventDefault(); open('/settings') }} style={styles.link}>Profile and answers</a>
           <a href="#" onClick={(e) => { e.preventDefault(); open('/jobs/queue') }} style={styles.link}>Apply queue</a>
           <a href="#" onClick={(e) => { e.preventDefault(); signOut() }} style={{ ...styles.link, color: '#6b7280' }}>Sign out</a>
         </div>
@@ -176,16 +217,21 @@ export default function Popup() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  container: { width: 320, fontFamily: 'system-ui, sans-serif', fontSize: 13 },
-  header: { display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: '#fff7ed', borderBottom: '1px solid #fed7aa' },
-  logo: { fontSize: 20 },
-  title: { flex: 1, fontWeight: 700, color: '#c2410c' },
-  toggle: { border: 'none', borderRadius: 12, padding: '4px 12px', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12 },
-  body: { padding: 14, display: 'flex', flexDirection: 'column', gap: 9 },
-  input: { border: '1px solid #d1d5db', borderRadius: 6, padding: '7px 9px', fontSize: 13, outline: 'none' },
-  btn: { background: '#ea580c', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 0', fontWeight: 600, cursor: 'pointer', fontSize: 13 },
-  error: { color: '#dc2626', margin: '4px 0 0' },
-  hint: { color: '#9ca3af', margin: 0, fontSize: 11 },
-  link: { color: '#c2410c', textDecoration: 'none' },
-  notice: { textAlign: 'left', fontSize: 12, padding: '7px 9px', borderRadius: 6, background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', cursor: 'pointer' },
+  container: { width: 330, fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif', fontSize: 13, color: '#0b0d12', background: '#fff' },
+  header: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', background: '#fff', borderBottom: '1px solid #e3e8f2' },
+  logo: { width: 24, height: 24, borderRadius: 7, background: '#0b0d12', display: 'grid', placeItems: 'center' },
+  title: { flex: 1, fontWeight: 800, letterSpacing: '-0.02em', color: '#0b0d12', fontSize: 14.5 },
+  toggle: { border: 'none', borderRadius: 999, padding: '4px 12px', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 11.5 },
+  body: { padding: 14, display: 'flex', flexDirection: 'column', gap: 10 },
+  input: { border: '1px solid #cfd6e4', borderRadius: 9, padding: '8px 10px', fontSize: 13, outline: 'none' },
+  btn: { background: '#0b0d12', color: '#fff', border: 'none', borderRadius: 10, padding: '9px 0', fontWeight: 600, cursor: 'pointer', fontSize: 13 },
+  btnLight: { background: '#fff', color: '#0b0d12', border: '1px solid #cfd6e4', borderRadius: 10, padding: '9px 0', fontWeight: 600, cursor: 'pointer', fontSize: 13 },
+  error: { color: '#b8321f', margin: '4px 0 0' },
+  hint: { color: '#8a91a0', margin: 0, fontSize: 11 },
+  link: { color: '#1c3fd6', textDecoration: 'none', fontWeight: 600 },
+  notice: { textAlign: 'left', fontSize: 12, padding: '8px 10px', borderRadius: 10, background: '#fff4dc', border: '1px solid #ffd78a', color: '#7a4c00', cursor: 'pointer' },
+  atsBox: { display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 14, background: 'linear-gradient(#f5f8ff, #e9efff)', boxShadow: 'inset 0 2px 1px rgba(255,255,255,.95), 0 10px 20px -16px rgba(47,91,255,.6)' },
+  ring: { width: 50, height: 50, borderRadius: '50%', display: 'grid', placeItems: 'center', flex: 'none' },
+  ringInner: { width: 38, height: 38, borderRadius: '50%', background: '#fff', display: 'grid', placeItems: 'center', fontSize: 15 },
+  chipMiss: { background: '#ffd0dc', color: '#7a1f35', borderRadius: 999, padding: '2px 8px', fontSize: 11.5, fontWeight: 600 },
 }

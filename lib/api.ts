@@ -106,3 +106,29 @@ export async function getResumeFile(jobText = ''): Promise<{ base64: string; nam
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return { base64: btoa(bin), name, type, label }
 }
+
+/** A cover letter for the form being filled, written from the user's résumé. Empty when unavailable. */
+export async function writeCoverLetter(jobTitle: string, company: string, jobText: string): Promise<string> {
+  try {
+    const r = await json('/api/extension/cover-letter', { method: 'POST', body: JSON.stringify({ jobTitle, company, jobText }) })
+    return String(r.content ?? '')
+  } catch {
+    return '' // no plan, writer down: the field stays for the user
+  }
+}
+
+export interface AtsSummary {
+  score: number; have: string[]; missing: string[]
+  visa: 'sponsors' | 'no-sponsorship' | 'unknown'; years: { required: number | null; yours: number | null }
+  region: 'us' | 'ca' | 'uk' | 'eu' | null; resumeLabel: string | null
+}
+/** ATS check of a job page against the résumé that would be attached. */
+export async function atsCheck(jobText: string): Promise<AtsSummary> {
+  const res = await fetch(`${(await getState()).apiBase}/api/extension/ats`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Extension-Token': (await getState()).token ?? '' },
+    body: JSON.stringify({ jobText }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || 'Check failed')
+  return data as AtsSummary
+}

@@ -42,6 +42,8 @@ export interface FillContext {
   resumeLabel?: () => string | undefined
   /** AI answer for an open-ended question (empty string when unavailable). */
   askAI: (question: string) => Promise<string>
+  /** A cover letter written for this job from the user's résumé (empty when unavailable). */
+  getCoverLetter?: () => Promise<string>
 }
 
 export interface FillReport {
@@ -268,6 +270,13 @@ function chooseOption(kind: FieldKind, options: string[], ctx: FillContext): num
 
 async function fillText(el: HTMLInputElement | HTMLTextAreaElement, q: string, kind: FieldKind, ctx: FillContext): Promise<boolean> {
   let v = valueFor(kind, ctx)
+  // A real "cover letter" box gets a full letter for this job; shorter
+  // "why do you want…" questions get a short AI answer instead.
+  if (v === null && kind === 'coverLetter') {
+    v = /cover letter/i.test(q) && el.tagName === 'TEXTAREA'
+      ? ((await ctx.getCoverLetter?.().catch(() => '')) || null)
+      : ((await ctx.askAI(q).catch(() => '')) || null)
+  }
   if (v === null && kind === 'unknown' && q.length > 3) {
     v = (await ctx.askAI(q).catch(() => '')) || null
   }
