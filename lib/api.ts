@@ -56,9 +56,27 @@ export async function getResumeStatus(): Promise<{ hasFile: boolean; fileName: s
   }
 }
 
-/** Pull next queued job assigned to 'extension' executor */
-export async function fetchNextJob() {
-  return json('/api/extension/queue')
+const tz = () => new Date().getTimezoneOffset()
+
+/** Next queued job for the extension. The server applies the user's site rules and daily caps. */
+export async function fetchNextJob(): Promise<{ job: any | null; capped?: boolean }> {
+  return json(`/api/extension/queue?tz=${tz()}`)
+}
+
+export interface Schedule { mode: 'whenOpen' | 'times'; times: string[]; night: boolean }
+export interface SiteRow { id: string; label: string; on: boolean; mode: 'assist' | 'auto'; cap: number; used: number }
+export interface Overview { sentToday: number; inLine: number; needsYou: number; schedule: Schedule; sites: SiteRow[] }
+
+/** Today's numbers, the schedule and per-site rules with today's usage. */
+export async function getOverview(): Promise<Overview> {
+  return json(`/api/extension/overview?tz=${tz()}`)
+}
+
+export interface NavStep { action: 'click' | 'stop' | 'done'; i?: number; why?: string }
+/** One AI navigator step: which numbered element to click, or stop. */
+export async function navigate(page: Record<string, unknown>): Promise<NavStep> {
+  try { return await json('/api/extension/navigate', { method: 'POST', body: JSON.stringify(page) }) }
+  catch { return { action: 'stop', why: 'The navigator is unavailable right now' } }
 }
 
 /** Flat applicant profile used to fill forms */
@@ -121,6 +139,7 @@ export interface AtsSummary {
   score: number; have: string[]; missing: string[]
   visa: 'sponsors' | 'no-sponsorship' | 'unknown'; years: { required: number | null; yours: number | null }
   region: 'us' | 'ca' | 'uk' | 'eu' | null; resumeLabel: string | null
+  flags?: { kind: string; label: string; quote: string; blocking: boolean }[]
 }
 /** ATS check of a job page against the résumé that would be attached. */
 export async function atsCheck(jobText: string): Promise<AtsSummary> {

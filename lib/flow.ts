@@ -9,8 +9,12 @@ import {
   type FillContext, type FillReport,
 } from './autofill'
 import { markSubmitting, reportJobResult, reportProgress, requestReview, type ActiveJob } from './messages'
+import { navigateToForm } from './navigator'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** Which fields are showing, to tell whether a click moved the form on. */
+const fieldSignature = () => Array.from(document.querySelectorAll('input:not([type=hidden]),textarea,select'))
+  .filter((el) => (el as HTMLElement).offsetParent !== null).map((el) => (el as HTMLInputElement).name || el.id).join('|')
 const MAX_STEPS = 15
 
 export interface FlowOptions {
@@ -129,6 +133,20 @@ export async function runFlow(active: ActiveJob, ctx: FillContext, opts: FlowOpt
       await sleep(1800)
       report.requiredUnresolved = []
       continue
+    }
+
+    // Neither Next nor Submit recognised: ask the navigator for one click
+    // (it never submits). Only when nothing required is still empty.
+    if (!report.requiredUnresolved.length && !opts.root) {
+      const before = fieldSignature()
+      const nav = await navigateToForm('Move to the next step of this application form. Do not submit.', 1, false)
+      if (nav.kind === 'clicked' && fieldSignature() !== before) {
+        await reportProgress(`step ${step + 1} (navigator)`)
+        report.requiredUnresolved = []
+        continue
+      }
+      if (nav.kind === 'stop') { await handOver(report, nav.why); return watchForConfirmation(confirmed, report) }
+      if (nav.kind === 'confirmed') return watchForConfirmation(confirmed, report)
     }
 
     await handOver(report, 'We filled what we could but could not find the Submit button.')

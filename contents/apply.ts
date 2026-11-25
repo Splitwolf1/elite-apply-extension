@@ -2,6 +2,7 @@ import type { PlasmoCSConfig } from 'plasmo'
 import { fillForm, findApplyEntry, isConfirmationPage, isVisible, needsLogin, questionText, setBannerRecheck, showReviewBanner, type FillContext } from '~lib/autofill'
 import { buildFillContext, getActiveJob, reportJobResult, reportProgress, requestReview, type ActiveJob } from '~lib/messages'
 import { runFlow, watchForConfirmation } from '~lib/flow'
+import { navigateToForm } from '~lib/navigator'
 import { getState } from '~lib/storage'
 
 /**
@@ -113,9 +114,13 @@ async function main() {
     return
   }
 
+  // Unknown page: let the AI navigator find the way to the form.
+  const nav = await navigateToForm(`Apply to ${[active.job.jobTitle, active.job.companyName].filter(Boolean).join(' at ') || 'this job'}`)
+  if (nav.kind === 'form') return runFlow(active, ctx)
+  // We didn't submit anything here, so a "received" page is the user's to confirm.
   await requestReview(
     { filled: 0, unresolved: [], requiredUnresolved: [], resumeUploaded: false },
-    "We couldn't find the application form on this page",
+    nav.kind === 'stop' ? nav.why : nav.kind === 'confirmed' ? 'This page says you already applied. Please check.' : "We couldn't find the application form on this page",
   )
   watchForConfirmation(isConfirmationPage)
 }

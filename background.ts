@@ -19,7 +19,7 @@
  */
 
 import { DEFAULT_SCREENING, getState, setState, type ScreeningAnswers } from '~lib/storage'
-import { atsCheck, fetchNextJob, getAnswer, writeCoverLetter, getProfile, getResumeFile, getResumeStatus, reportResult, revokeToken, verifyToken, whoAmI, type ReportStatus } from '~lib/api'
+import { atsCheck, fetchNextJob, getAnswer, getOverview, navigate, writeCoverLetter, getProfile, getResumeFile, getResumeStatus, reportResult, revokeToken, verifyToken, whoAmI, type Overview, type ReportStatus, type Schedule } from '~lib/api'
 
 export {}
 
@@ -27,6 +27,11 @@ const ALARM_NAME = 'poll-queue'
 const POLL_INTERVAL_MINUTES = 1
 const FILL_MS = 4 * 60_000
 const REVIEW_MS = 20 * 60_000
+/** AI navigator clicks allowed per job, across all its pages. */
+const NAV_BUDGET = 25
+/** Pause between applications, so the pace looks like a person's. */
+const GAP_MIN_MS = 2 * 60_000
+const GAP_MAX_MS = 5 * 60_000
 
 interface Run {
   job: any
@@ -36,6 +41,7 @@ interface Run {
   phase: 'filling' | 'review'
   submitting?: boolean
   deadline: number
+  navSteps?: number
 }
 
 const getRun = async (): Promise<Run | null> => (await chrome.storage.session.get('run')).run ?? null
@@ -100,9 +106,60 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (run) return checkDeadline(run)
 
   const { token, enabled } = await getState()
-  if (!token || !enabled || (await queuePaused())) return
+  if (!token) return
+  if (!enabled) return note('Off')
+  if (await queuePaused()) return note('Paused: applications are waiting for you')
+
+  const { nextStartAt = 0 } = await chrome.storage.local.get('nextStartAt')
+  if (Date.now() < (nextStartAt as number)) return note('Pausing between applications', nextStartAt as number)
+
+  const overview = await cachedOverview()
+  const when = overview ? scheduleNow(overview.schedule) : { ok: true }
+  if (!when.ok) return note(when.why ?? 'Outside your hours', when.next)
+
   await startNextJob().catch((e) => setState({ lastError: String(e?.message ?? e) }))
 })
+
+// ── Schedule and status ─────────────────────────────────────────────────────
+
+/** The user's rules and today's numbers, refreshed every 10 minutes (or on demand). */
+async function cachedOverview(force = false): Promise<Overview | null> {
+  const { overview, overviewAt = 0 } = await chrome.storage.local.get(['overview', 'overviewAt'])
+  if (!force && overview && Date.now() - (overviewAt as number) < 10 * 60_000) return overview as Overview
+  try {
+    const fresh = await getOverview()
+    await chrome.storage.local.set({ overview: fresh, overviewAt: Date.now() })
+    return fresh
+  } catch {
+    return (overview as Overview) ?? null
+  }
+}
+
+const timeOn = (t: string, base: Date) => { const [h, m] = t.split(':').map(Number); const d = new Date(base); d.setHours(h, m, 0, 0); return d }
+
+/** Whether the schedule lets a job start now; if not, why and when next. */
+function scheduleNow(s: Schedule, now = new Date()): { ok: boolean; why?: string; next?: number } {
+  const h = now.getHours()
+  if (!s.night && (h >= 23 || h < 7)) {
+    const next = new Date(now)
+    if (h >= 23) next.setDate(next.getDate() + 1)
+    next.setHours(7, 0, 0, 0)
+    return { ok: false, why: 'Resting overnight', next: next.getTime() }
+  }
+  if (s.mode !== 'times' || !s.times.length) return { ok: true }
+  // Each set time opens a 90-minute window.
+  if (s.times.some((t) => { const d = now.getTime() - timeOn(t, now).getTime(); return d >= 0 && d < 90 * 60_000 })) return { ok: true }
+  const later = s.times.map((t) => timeOn(t, now).getTime()).filter((x) => x > now.getTime()).sort((a, b) => a - b)[0]
+  if (later) return { ok: false, why: 'Waiting for your next set time', next: later }
+  const first = timeOn([...s.times].sort()[0], now)
+  first.setDate(first.getDate() + 1)
+  return { ok: false, why: 'Waiting for your next set time', next: first.getTime() }
+}
+
+/** What the runner is doing, for the popup. */
+async function note(text: string, until?: number) {
+  await chrome.storage.local.set({ runner: { text, until: until ?? null, at: Date.now() } })
+}
 
 async function checkDeadline(run: Run) {
   if (Date.now() < run.deadline) return
@@ -117,7 +174,7 @@ async function checkDeadline(run: Run) {
 async function startNextJob() {
   const data = await fetchNextJob()
   const job = data?.job ?? null
-  if (!job?.jobUrl) return
+  if (!job?.jobUrl) return note(data?.capped ? 'Daily caps reached for your sites. More tomorrow.' : 'Queue is empty')
 
   let profile: any
   try {
@@ -132,13 +189,16 @@ async function startNextJob() {
   const tabId = win.tabs?.[0]?.id
   if (!win.id || !tabId) throw new Error('Could not open a window for the job')
 
-  await saveRun({ job, profile, windowId: win.id, tabIds: [tabId], phase: 'filling', deadline: Date.now() + FILL_MS })
+  await saveRun({ job, profile, windowId: win.id, tabIds: [tabId], phase: 'filling', deadline: Date.now() + FILL_MS, navSteps: 0 })
   await setState({ lastError: null })
+  await note(`Applying: ${[job.jobTitle, job.companyName].filter(Boolean).join(' at ') || 'a job'}`)
 }
 
 /** Reports the outcome and clears the run. */
 async function finish(run: Run, status: ReportStatus, details: Record<string, unknown>, closeWindow: boolean) {
   await saveRun(null)
+  await chrome.storage.local.set({ nextStartAt: Date.now() + GAP_MIN_MS + Math.random() * (GAP_MAX_MS - GAP_MIN_MS) })
+  await chrome.storage.local.remove('overviewAt') // refresh today's counts
   await reportResult({ queueId: run.job.$id, jobUrl: run.job.jobUrl, status, resultDetails: details }).catch(() => {})
 
   const where = [run.job.jobTitle, run.job.companyName].filter(Boolean).join(' at ') || 'the job'
@@ -243,7 +303,8 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
     case 'GET_ACTIVE_JOB': {
       if (parkedEntry) return { job: parkedEntry.job, profile: {}, screening: {}, submitMode: 'review', phase: 'parked', submitting: false }
       if (!fromJobTab) return null
-      const { submitMode } = await getState()
+      // Assist or Auto comes from the job's site rule (Sites and rules on the website).
+      const submitMode = run!.job.submitMode === 'auto' ? 'auto' : 'review'
       return { job: run!.job, profile: run!.profile, screening: await screeningFrom(run!.profile), submitMode, phase: run!.phase, submitting: !!run!.submitting }
     }
 
@@ -296,6 +357,34 @@ async function handle(msg: any, sender: chrome.runtime.MessageSender) {
       if (sender.tab) return { ok: false, error: 'Not allowed' }
       try { return { ok: true, result: await atsCheck(String(msg.jobText ?? '').slice(0, 20000)) } }
       catch (e: any) { return { ok: false, error: String(e?.message ?? e) } }
+    }
+
+    case 'NAVIGATE': {
+      // AI navigator step: the job's own tabs only, within the per-job budget.
+      if (!fromJobTab) return { action: 'stop', why: 'Not a job tab' }
+      if ((run!.navSteps ?? 0) >= NAV_BUDGET) return { action: 'stop', why: 'This application took more steps than expected.' }
+      run!.navSteps = (run!.navSteps ?? 0) + 1
+      run!.deadline = Math.max(run!.deadline, Date.now() + FILL_MS)
+      await saveRun(run)
+      return navigate({ ...(msg.page ?? {}), allowSubmit: false })
+    }
+
+    // ── From the popup (no tab sender) ──
+    case 'OVERVIEW': {
+      if (sender.tab) return null
+      const [overview, { runner }] = await Promise.all([cachedOverview(!!msg.fresh), chrome.storage.local.get('runner')])
+      const r = await getRun()
+      return { overview, runner: runner ?? null, current: r ? { title: r.job.jobTitle, company: r.job.companyName, phase: r.phase } : null }
+    }
+    case 'SHOW_CURRENT': {
+      if (sender.tab) return { ok: false }
+      const r = await getRun()
+      if (r) await chrome.windows.update(r.windowId, { state: 'normal', focused: true }).catch(() => {})
+      return { ok: !!r }
+    }
+    case 'PAGE_COVER_LETTER': {
+      if (sender.tab) return { content: '' }
+      return { content: await writeCoverLetter(String(msg.title ?? ''), '', String(msg.jobText ?? '').slice(0, 20000)) }
     }
 
     case 'JOB_PROGRESS': {
