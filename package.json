@@ -1,7 +1,7 @@
 {
   "name": "elite-apply-extension",
-  "displayName": "Elite Apply \u2014 Auto Job Applier",
-  "version": "0.0.1",
+  "displayName": "Elite Apply — Auto Job Applier",
+  "version": "1.0.0",
   "description": "Fills job applications on LinkedIn, Indeed, company career sites and every major ATS",
   "private": true,
   "scripts": {
@@ -9,7 +9,8 @@
     "build": "plasmo build",
     "build:dev": "node scripts/build.mjs dev",
     "build:prod": "node scripts/build.mjs prod",
-    "package": "plasmo package"
+    "package": "plasmo package",
+    "package:store": "node scripts/build.mjs store"
   },
   "dependencies": {
     "plasmo": "0.90.5",
@@ -23,21 +24,18 @@
     "typescript": "5.4.5"
   },
   "manifest": {
-    "name": "Elite Apply \u2014 Auto Job Applier",
+    "name": "Elite Apply — Auto Job Applier",
     "description": "Fills job applications on LinkedIn, Indeed, company career sites and every major ATS",
     "permissions": [
       "storage",
       "alarms",
       "notifications",
-      "activeTab",
-      "scripting",
-      "windows",
       "tabs"
     ],
     "host_permissions": [
       "https://aijobtoolkit.com/*",
       "https://www.aijobtoolkit.com/*",
-      "http://localhost:3000/*"
+      "http://localhost/*"
     ]
   }
 }

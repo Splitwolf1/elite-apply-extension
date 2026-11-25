@@ -12,7 +12,7 @@ export const config: PlasmoCSConfig = {
   matches: [
     'https://aijobtoolkit.com/extension/connect*',
     'https://www.aijobtoolkit.com/extension/connect*',
-    'http://localhost:3000/extension/connect*',
+    'http://localhost/extension/connect*', // any port (dev); stripped from store builds
   ],
   run_at: 'document_start',
 }
