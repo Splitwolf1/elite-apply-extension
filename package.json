@@ -1,7 +1,7 @@
 {
   "name": "elite-apply-extension",
   "displayName": "Elite Apply — Auto Job Applier",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Fills job applications on LinkedIn, Indeed, company career sites and every major ATS",
   "private": true,
   "scripts": {
