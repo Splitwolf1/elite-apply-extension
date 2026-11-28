@@ -134,7 +134,7 @@ export default function Popup() {
   }
   const copyLetter = async () => { try { await navigator.clipboard.writeText(letter); setCopied(true) } catch { /* blocked */ } }
 
-  const logo = <span style={S.logo} aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M2.5 11.5l3.5-3.5 2.5 2.5 5-6M10 4.5h3.5V8" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
+  const logo = <span style={S.logo} aria-hidden="true"><svg viewBox="0 0 64 64" width="17" height="17"><path d="M16 6h22l12 12v36a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z" fill="#fff" /><path d="M21 48L31 38L41 28" fill="none" stroke="#9fb4ff" strokeWidth="5" strokeLinecap="round" /><circle cx="21" cy="48" r="5" fill="#2f5bff" /><circle cx="31" cy="38" r="5" fill="#2f5bff" /><path d="M41 19q1 8 9 9q-8 1-9 9q-1-8-9-9q8-1 9-9z" fill="#2f5bff" /></svg></span>
 
   if (me === undefined) return <div style={{ ...S.container, padding: 24, textAlign: 'center', color: '#6b7280' }}>Checking…</div>
 
@@ -306,7 +306,7 @@ function Footer({ me, apiBase, open, signOut }: { me: { email: string | null; na
 const S: Record<string, React.CSSProperties> = {
   container: { width: 350, fontFamily: 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif', fontSize: 13, color: '#0b0d12', background: '#fff' },
   header: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', background: '#fff', borderBottom: '1px solid #e3e8f2' },
-  logo: { width: 24, height: 24, borderRadius: 7, background: '#0b0d12', display: 'grid', placeItems: 'center' },
+  logo: { width: 24, height: 24, borderRadius: 7, background: '#2f5bff', display: 'grid', placeItems: 'center' },
   title: { flex: 1, fontWeight: 800, letterSpacing: '-0.02em', color: '#0b0d12', fontSize: 14.5 },
   toggle: { border: 'none', borderRadius: 999, padding: '4px 12px', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 11.5 },
   tabs: { display: 'flex', gap: 4, padding: '8px 14px 0', borderBottom: '1px solid #e3e8f2' },
